@@ -4,7 +4,7 @@
 # splot:  plot spike train
 # GLR: Gaussian local rate filter
 
-using Distributions, Plots, ImageFiltering, Sound, Printf, Infiltrator
+using Distributions, Plots, ImageFiltering, Sound, Printf, Infiltrator, MLStyle
 
 DEFAULT_DT = 1.0e-5
 PLOT_SIZE = (800, 600)
@@ -18,10 +18,11 @@ function splot(spiketime::Vector{Float64}, height::Float64=1.0, lw::Float64=1.0)
         [0.0, height] .* ones(2, N), linewidth = lw, color=:blue, legend=false)
 end
 
-function splot!(spiketime::Vector{Float64}, height::Float64=1.0)
+function splot!(spiketime::Vector{Float64}, height::Float64=1.0, subplot::Int=1)
 
     N = length(spiketime)
-    plot!(ones(2, N) .* spiketime', [0.0, height] .* ones(2, N), color=:blue, legend=false)
+    plot!(ones(2, N) .* spiketime', [0.0, height] .* ones(2, N), 
+        color=:blue, legend=false, subplot = subplot)
 end
 
 # Uniform Gaussian rate filter
@@ -159,18 +160,34 @@ end
 
 
 
-# First passage time simulation parameters for specified Wald parameters with threshold (a) = 1
-function FirstPassageTime_parameters_from_Wald(mu::Float64, lambda::Float64)
+# First passage time model parameters (v,s,barrier) from Wald parameters (mu, lambda)
+# One FPT parameter must be specified by name and value. 
+# Name choices are "noiseMean", "noiseSD" and "barrier". 
+# Default name is "barrier", default value is 1.0 
+function FirstPassageTime_parameters_from_Wald(mu::Float64, lambda::Float64,
+    specifiedName::String = "barrier", specifiedValue::Float64 = 1.0)
 
-    return (1.0 / mu, 1.0 / sqrt(lambda), 1.0)  # (v, sigma, alpha) = (drift speed, noise s.d., threshold)
+    @match specifiedName begin   # macro in MLStyle.jl
+        "noiseMean" => return(specifiedValue, specifiedValue*mu / sqrt(lambda), specifiedValue*mu)
+        "noiseSD"   => return(specifiedValue*sqrt(lambda) / mu, specifiedValue, specifiedValue*sqrt(lambda) )
+        "barrier"   => return(specifiedValue / mu, specifiedValue / sqrt(lambda), specifiedValue) 
+    end
+end
+
+# FPT model (v,s,barrier) defines unique Wald distribution (mu, lambda)
+function Wald_parameters_from_FirstpassageTimeModel(v::Float64, s::Float64, barrier::Float64)
+
+    (barrier/v, (barrier/s)^2)
 
 end
+
 
 # sample of size N from Wald (Inverse Gaussian) distribution via FirstPassageTime_simulate()
 function Wald_sample(interval::Vector{Float64}, mu::Float64, lambda::Float64, dt::Float64=DEFAULT_DT)
 
     # drift-diffusion model parameters from Wald parameters
     (v, s, a) = FirstPassageTime_parameters_from_Wald(mu, lambda)
+    println(v, " ", s, " ", a)
     FirstPassageTime_simulate(interval, v, s, a, dt)
     return interval
 end
@@ -423,21 +440,36 @@ end
 
 # return vector of interval lengths in spike train at specified phase (0-360)
 #   relative to sin stimulus with frequency freq. 
-function intervalsPhase(spiketime::Vector{Float64}, phase::Float64, freq::Float64, dt::Float64=DEFAULT_DT)
+function intervalPhase(spiketime::Vector{Float64}, phase::Float64, freq::Float64, dt::Float64=DEFAULT_DT)
 
+    if phase < 0.0
+        phase = 360.0 + phase
+    end
     T = maximum(spiketime)
     wavelength = 1.0/freq
-    cycles = Int(floor(T/wavelength)) - 1  # actually cycles-1
-    sampleTime = (0:cycles)*wavelength*(1.0 + phase/360.0)
-    if (sampleTime[end]>T)    # not sure if this can happen but negligible cost to defend
-        samnpleTime = sampleTime[1:(end-1)]
-    end
+    cycles = Int(floor(T/wavelength))  
+    sampleTime = wavelength*(phase/360.0 .+ 0:(cycles-1))
+    samnpleTime = sampleTime[findall(sampleTime.<T)[1:(end-1)]]  
     interval = zeros(length(sampleTime))
 
-    @infiltrate
+    #@infiltrate
     # interval length at sample times. If sample time is a spike time then get next interval
-    for i in 1:length(sampleTime)
-        interval[i] = spt[findfirst(spt.>sampleTime[i])] - spt[findlast(spt.<=sampleTime[i])]
+    if sampleTime[1] < spiketime[1]  # special case: first sample time is before first spike
+        interval[1] = spiketime[1]
+        i0 = 2
+    else
+        i0 = 1
+    end
+    for i in i0:length(sampleTime)
+        iBefore = findlast(spiketime .< sampleTime[i])  # index to last spike time before sampleTime[i]
+        # if this spike is closer to the sample time than the next spike
+        if ( sampleTime[i] - spiketime[iBefore]) < (spiketime[iBefore+1] - sampleTime[i])
+            # selected interval ends at spiketime[iBefore] 
+            interval[i] = spiketime[iBefore] - spiketime[iBefore-1]
+        else
+            # seleted interval ends at the following spike
+            interval[i] = spiketime[iBefore+1] - spiketime[iBefore]
+        end
     end
 
     return interval

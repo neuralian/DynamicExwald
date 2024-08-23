@@ -142,7 +142,7 @@ end
 # end
 
 # test dynamic Exwald with no stimulus
-function test_spontaneous_Exwald_Neuron(N::Int64, 
+function test_Exwald_Neuron_spontaneous(N::Int64, 
         Exwald_param::Tuple{Float64, Float64, Float64}, dt::Float64 = DEFAULT_DT)
 
 (mu, lambda, tau) = Exwald_param
@@ -167,6 +167,7 @@ plot!(t, X, linewidth=lw * 1.5, label=@sprintf "Exwald (%.5f, %.5f, %.5f)" mu la
 ylims!(0.0, max(maximum(X), maximum(W)) * 1.25)
 xlims!(0.0, T)
 ylims!(0.0, 2.0*maximum(X))
+title!("Exwald Neuron Model Spontaneous ISI")
 #@infiltrate
 
 end
@@ -206,11 +207,135 @@ function test_Exwald_Neuron_sin(N::Int64,
     return spt
 end
 
-# # stimulus
-# A = 1.0
-# F = 1.0
-# q(t) = A*sin(2.0*π*F*t)
+# ISI distribution for Exwald neuron at specified phase of sinusoidal stimulus
+#   0 <= phase <= 360
+function test_Exwald_Neuron_phasedistribution(N::Int64, 
+    Exwald_param::Tuple{Float64, Float64, Float64}, 
+    Stim_param::Tuple{Float64, Float64}, 
+    phaseAngle::Vector{Float64}, 
+    dt::Float64 = DEFAULT_DT)
 
-# splot(spt, 50.0)
-# (t,r) = GLR(spt, [.1], 1.0e-3)
-# plot!(t, r)
+    # extract parameters
+    (mu, lambda, tau) = Exwald_param
+    (A, F) = Stim_param
+    (v, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda)   # Drift speed, noise s.d. & barrier height for Wald component
+    trigger = TriggerThreshold_from_PoissonTau(v, s, tau, dt)            # threshold for Poisson component using same noise
+
+    # sinusoidal stimulus
+    stimulus(t) = A*sin(2*π*F*t)
+
+    # simulate Exwald neuron
+    spt = Exwald_Neuron(N, (mu, lambda, tau), stimulus)
+
+    Npts = 128
+    R0 = 1.0
+    plt = plot(   [R0*sin(2.0*pi*i/Npts) for i in 0:Npts], 
+            [R0*cos(2.0*pi*i/Npts) for i in 0:Npts], 
+            size=(800,800), xlims = (-2.0, 2.0), ylims = (-2.0, 2.0), 
+            bgcolor = :white, gridcolor = :white, showaxis = false)
+    annotate!( 0.0, 2.0, ("Exwald Model Neuron ISI Distribution during sinusoidal stimulus",
+            14, :center))
+    annotate!( 0.0, 1.875, ("Top subplot is in phase with acceleration",
+            11, :center))
+    insetDiam = 0.18
+    R = 0.35 #  plot circle radius relative to width of parent axes
+    spi = 1  # subplot index counter
+    for i in 1:length(phaseAngle)
+
+    phaseRadians = -phaseAngle[i]*pi/180.0
+
+
+    # intervals at specified phase
+    I0 = intervalPhase(spt, phaseAngle[i], F)
+
+    inset = (1, bbox(R*cos(phaseRadians), R*sin(phaseRadians), 
+            insetDiam, insetDiam, :center, :center))
+  
+
+    T = maximum(I0)
+    t = collect(0.0:dt:T)
+
+    # predicted Distributions
+    v_p = v + stimulus(phaseAngle[i]/(360.0*F))
+    (mu_p, lambda_p) = Wald_parameters_from_FirstpassageTimeModel(v_p, s, barrier)
+    tau_p = PoissonTau_from_ThresholdTrigger(v_p, s, trigger, dt)
+
+    X = Exwaldpdf(mu_p, lambda_p, tau_p, t)
+    W = pdf(InverseGaussian(mu_p, lambda_p), t)
+    P = exp.(-t ./ tau_p) ./ tau_p
+
+    #@infiltrate
+
+    # y tick label visible at phase 0, x label visible at phase 180
+    # if i==3
+    #     ytickfontcolor = :black
+    # else 
+    #     ytickfontcolor = :white
+    # end 
+    ytickfontcolor = :white
+    if i==7
+        xtickfontcolor = :black
+    else 
+        xtickfontcolor = :white
+    end    
+
+    lw = 1.0
+    spi = spi + 1
+    H = histogram!(I0, bins = 64,  
+       normalize = :pdf, inset=inset, subplot = i+1, 
+       linewidth = 0.1, framestyle = :box, 
+       xticks=[.02], xtickfontcolor = xtickfontcolor, xtickdirection = :out,
+       yticks = [250.0], ytickfontcolor = ytickfontcolor, ytickdirection = :out)
+    plot!(t, W, subplot = i+1)
+    plot!(t, P, subplot = i+1)
+    plot!(t, X, subplot = i+1, linewidth = 2.0, color = :darkblue, 
+            xlims=(0.0, .04), ylims=(0.0, 400.))
+
+
+   end # phase angles
+
+
+   # plot cycle 2
+   spi = spi + 1
+   wavelength = 1.0/F
+   (t2, r2) = GLR(spt[findall(spt.<3.0*wavelength)], [.1], dt)# GLR over 3 cycles
+   i2 = Int(round(wavelength/dt)):Int(round(2.0*wavelength/dt)) # index 2nd cycle
+   r2 = r2[i2]            # extract 2nd cycle
+   t2 = (1:length(r2))*dt
+
+   spt2 = spt[findall((spt.>=wavelength) .* (spt.<2*wavelength))] .- wavelength
+
+
+
+   centerPlot = plot!(t2, r2, color = :green,  linewidth = 2.0,
+      inset = bbox(0.0175, -0.025,  .4, .1, :center, :center), 
+      framestyle = :box, xticks = [0.0, 1.0], xlims = (0.0, 1.),
+      ylims = (0.0, 100.0), yticks = [50.0], ytickfontcolor = :white,
+      subplot = spi)
+
+
+    splot!(spt2, 20.0, spi)
+
+    #@infiltrate
+    plot!(t2, v .+ [30.0*stimulus(t) for t in t2], subplot = spi, 
+         linewidth = 2.0, color = :pink)
+
+    annotate!(0.65, 90., ("acceleration", 10, :pink))
+    annotate!(0.25, 60., ("GLR", 10, :green))
+    # lw = 2.5
+    # plot!(t, W, linewidth=lw, size=PLOT_SIZE,
+    #     label=@sprintf "Wald (%.5f, %.5f)" mu_p lambda_p)
+    # plot!(t, P, linewidth=lw, label=@sprintf "Exponential (%.5f)" tau_p)
+    # plot!(t, X, linewidth=lw * 1.5, label=@sprintf "Exwald (%.5f, %.5f, %.5f)" mu_p lambda_p tau_p)
+    # ylims!(0.0, max(maximum(X), maximum(W)) * 1.25)
+    # xlims!(0.0, T)
+    # ylims!(0.0, 2.0*maximum(X))
+    # display(title!("Exwald Neuron Model ISI at phase angle $phaseAngle"))
+
+    display(plt)
+
+    # png("nameThisFigure")
+    
+    spt
+
+end
