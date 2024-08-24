@@ -4,7 +4,7 @@
 # splot:  plot spike train
 # GLR: Gaussian local rate filter
 
-using Distributions, Plots, ImageFiltering, Sound, Printf, Infiltrator, MLStyle
+using Distributions, Plots, ImageFiltering, Sound, Printf, Infiltrator, MLStyle, SpecialFunctions
 
 DEFAULT_DT = 1.0e-5
 PLOT_SIZE = (800, 600)
@@ -363,6 +363,45 @@ function Exwaldpdf(mu::Float64, lambda::Float64, tau::Float64, t::Vector{Float64
     X = X / sum(X) / mean(diff(t)) # renormalize (W & P are not normalized because of discrete approx)
     #@infiltrate
 end
+
+# Exwald pdf at t (From Schwarz (2002) DOI: 10.1081/STA-120017215)
+function Exwaldpdf(mu::Float64, lambda::Float64, tau::Float64, t::Float64)
+
+    # drift-diffusion FPT parameters
+    # v is Schwarz's μ     (drift)
+    # s is Schwarz's σ     (diffusion)
+    # a is Schwarz's l     (barrier)
+    (v, s, a) = FirstPassageTime_parameters_from_Wald(mu,lambda)
+
+    # r = 1.0/tau is Schwarz's λ 
+    r = 1.0/tau
+
+    k2 = v^2 - 2.0*r*s^2
+    # case 1 (Schwarz p2118)
+    if k2 > 0.0
+
+        k = sqrt(k2)
+        F =  x-> cdf(Normal(),x)
+
+        #@infiltrate
+        return r*exp(-r*t + a*v/s^2)*(exp(-k*a/s^2)*F( (k*t-a)/(s*sqrt(t))) + exp(k*a/s^2)*F(-(k*t + a)/(s*sqrt(t))))
+
+    # case 2
+    # nb erfcx(-ix) = w(x)
+    else
+
+        k = sqrt(-k2)
+        w(x) = erfcx(-1im*x)   # Fadeeva w() function
+
+        #@infiltrate
+        return r*exp(-(a-v*t)^2/(2.0*s^2*t))*real( w( k*sqrt(t)/(s*sqrt(2.0)) + 1im*a/(s*sqrt(2.0*t)) ) )
+
+    end
+
+end
+
+
+
 
 
 function test_Exwald_sample(mu, lambda, tau)
