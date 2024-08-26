@@ -4,7 +4,8 @@
 # splot:  plot spike train
 # GLR: Gaussian local rate filter
 
-using Distributions, Plots, ImageFiltering, Sound, Printf, Infiltrator, MLStyle, SpecialFunctions
+using Distributions, Plots, ImageFiltering, Sound, Printf, 
+        Infiltrator, MLStyle, SpecialFunctions, NLopt, Random
 
 DEFAULT_DT = 1.0e-5
 PLOT_SIZE = (800, 600)
@@ -193,19 +194,7 @@ function Wald_sample(interval::Vector{Float64}, mu::Float64, lambda::Float64, dt
 end
 
 
-# Compare first passage time simulation histogram to InverseGaussian from Distributions.jl 
-function test_Wald_sample(mu::Float64, lambda::Float64)
 
-    N = 5000  # sample size
-    interval = zeros(N)
-    Wald_sample(interval, mu, lambda)
-    histogram(interval, normalize=:pdf, nbins=100,
-        label=@sprintf "First passage times (%.3f, %.3f)" mu lambda)
-    t = DEFAULT_DT:DEFAULT_DT:(maximum(interval)*1.2)
-    plot!(t, pdf(InverseGaussian(mu, lambda), t),
-        label="Wald ($mu, $lambda)", linewidth=2.5, legend=:topleft, size=PLOT_SIZE)
-    xlims!(0.0, t[end])
-end
 
 
 #function FirstPassageTime_simulate(interval::Vector{Float64}, v::Float64, s::Float64, a::Float64, dt::Float64=DEFAULT_DT, T::Float64=1.5*v/a*length(interval))
@@ -277,19 +266,6 @@ function PoissonTau_from_ThresholdTrigger(m::Float64, s::Float64, threshold::Flo
 
 end
 
-# Compare Expsim histogram to Exponential 
-function test_Exponential_sample(tau::Float64, dt::Float64=DEFAULT_DT)
-
-    N = 5000  # sample size
-    interval = zeros(N)
-    (m, s, threshold) = Exponential_sample(interval, tau)
-    histogram(interval, normalize=:pdf, nbins=100,
-        label=@sprintf "Threshold trigger (%.2f, %.2f, %.2f)" m s threshold)
-    t = 0.0:dt:(maximum(interval)*1.2)
-    plot!(t, exp.(-t ./ tau) ./ tau, linewidth=2.5, size=PLOT_SIZE,
-        label=@sprintf "Exponential ( %.2f)" tau)  #pdf(InverseGaussian(mu, lambda), t))
-    xlims!(0.0, t[end])
-end
 
 # Exwald samples by simulation
 # interval: return vector must be initialized to zeros
@@ -318,7 +294,7 @@ function Exwald_simulate(interval::Vector{Float64},
 
     #@infiltrate
 
-    while i < length(interval)  # generate spikes until interval vector is full
+    while i <= length(interval)  # generate spikes until interval vector is full
 
         while x < barrier                                   # until reached barrier
             t = t + dt                                      # time update
@@ -343,7 +319,7 @@ end
 
 # Exwald samples by simulation
 # sample size = length(interval)
-function Exwald_sample(interval::Vector{Float64}, mu::Float64, lambda::Float64, tau::Float64, dt::Float64=DEFAULT_DT)
+function Exwald_sample_sim(interval::Vector{Float64}, mu::Float64, lambda::Float64, tau::Float64, dt::Float64=DEFAULT_DT)
 
     (v, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda)   # Drift speed, noise s.d. & barrier height for Wald component
     trigger = TriggerThreshold_from_PoissonTau(v, s, tau, dt)            # threshold for Poisson component using same noise
@@ -353,9 +329,17 @@ function Exwald_sample(interval::Vector{Float64}, mu::Float64, lambda::Float64, 
 
 end
 
+# Exwald sample by sum of inverse Gaussian and Exponential
+#function Exwald_sample_sum(interval::Vector{Float64}, mu::Float64, lambda::Float64, tau::Float64, dt::Float64=DEFAULT_DT)
+function Exwald_sample_sum(N::Int64, mu::Float64, lambda::Float64, tau::Float64, dt::Float64 = DEFAULT_DT)
+
+    rand(InverseGaussian(mu, lambda), N) + rand(Exponential(tau), N)
+
+end
+
 
 # Exwald pdf by convolution of Wald and Exponential pdf
-function Exwaldpdf(mu::Float64, lambda::Float64, tau::Float64, t::Vector{Float64})
+function Exwaldpdf_byconvolution(mu::Float64, lambda::Float64, tau::Float64, t::Vector{Float64})
 
     W = pdf(InverseGaussian(mu, lambda), t)
     P = exp.(-t ./ tau) ./ tau
@@ -401,36 +385,15 @@ function Exwaldpdf(mu::Float64, lambda::Float64, tau::Float64, t::Float64)
 end
 
 
+# Exwald pdf at vector of times
+function Exwaldpdf(mu::Float64, lambda::Float64, tau::Float64, t::Vector{Float64})
 
+    [Exwaldpdf(mu, lambda, tau, s) for s in t]
 
-
-function test_Exwald_sample(mu, lambda, tau)
-
-    N = 5000  # sample size
-    I = zeros(N)
-    Exwald_sample(I, mu, lambda, tau)
-    (v, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda)   # Drift speed, noise s.d. & barrier height for Wald component
-    trigger = TriggerThreshold_from_PoissonTau(v, s, tau)            # threshold for Poisson component using same noise
-    histogram(I, normalize=:pdf, nbins=100, size=(800, 600),
-        label=@sprintf "Simulation (%.5f, %.5f, %.5f, %.2f)" v s barrier trigger)
-
-    dt = 1.0e-5
-    T = maximum(I) * 1.2
-    t = dt:dt:T
-    lw = 2.5
-
-    X = Exwaldpdf(mu, lambda, tau, dt, T)
-    W = pdf(InverseGaussian(mu, lambda), t)
-    P = exp.(-t ./ tau) ./ tau
-
-    plot!(t, W, linewidth=lw, size=PLOT_SIZE,
-        label=@sprintf "Wald (%.5f, %.5f)" mu lambda)
-    plot!(t, P, linewidth=lw, label=@sprintf "Exponential (%.5f)" tau)
-    plot!(t, X, linewidth=lw * 1.5, label=@sprintf "Exwald (%.5f, %.5f, %.5f)" mu lambda tau)
-    ylims!(0.0, max(maximum(X), maximum(W)) * 1.25)
-    xlims!(0.0, T)
-    #@infiltrate
 end
+
+
+
 
 # Exwald spike times 
 function Exwald_spiketimes(mu::Float64, lambda::Float64, tau::Float64,
@@ -439,7 +402,7 @@ function Exwald_spiketimes(mu::Float64, lambda::Float64, tau::Float64,
     # expected number of spikes in time T is T/(mu+tau)                       
     N = Int(ceil(1.5 * T / (mu + tau)))  # probably enough spikes to reach T
     I = zeros(N)
-    Exwald_sample(I, mu, lambda, tau, dt)
+    Exwald_sample_sim(I, mu, lambda, tau, dt)
     spiketime = cumsum(I)
     spiketime = spiketime[findall(spiketime .<= T)]
 end
@@ -450,7 +413,10 @@ end
 # stimulus function of time, default f(t)=0.0 (gives spontaneous spike train)
 # Default stimulus = 0.0 (spontaneous activity)
 function Exwald_Neuron(N, 
-    Exwald_param::Tuple{Float64, Float64, Float64}, stimulus::Function, dt::Float64 = DEFAULT_DT)
+    Exwald_param::Tuple{Float64, Float64, Float64}, 
+    stimulus::Function, 
+    dt::Float64 = DEFAULT_DT,
+    intervals::Bool = false)  # returns spiketimes if false, intervals if true  
 
 
     I = zeros(N)    # allocate vector for sample of size N 
@@ -473,7 +439,7 @@ function Exwald_Neuron(N,
     Exwald_simulate(I, q, s, barrier, trigger, dt)
 
     # spike train is cumulative sum of intervals
-    spiketime = cumsum(I)
+    return intervals ?   I : cumsum(I)
 
 end
 
@@ -515,3 +481,30 @@ function intervalPhase(spiketime::Vector{Float64}, phase::Float64, freq::Float64
 
 end
 
+# fit Exwald parameters to vector of interspike intervals
+#   using maximum likelihood or minimum KL-divergence (Paulin, Pullar and Hoffman, 2024)
+# uses NLopt
+# returns (mu, lambda, tau)  (in units matching the input data, 
+#                             e.g. seconds if intervals are specified in seconds )
+function Fit_Exwald_to_ISI(ISI::Vector{Float64}, Pinit::Vector{Float64})
+
+    # likelihood function
+    grad = zeros(3)
+    LHD = (param, grad) -> sum(log.(Exwaldpdf(param[1], param[2], param[3], ISI))) 
+
+    #@infiltrate
+
+    optStruc = Opt(:LN_PRAXIS,3)   # set up 3-parameter NLopt optimization problem
+    
+    optStruc.max_objective = LHD       # objective is to maximize likelihood
+
+    optStruc.lower_bounds = [0.0, 0.0, 0.0]   # constrain all parameters > 0
+    #optStruc.upper_bounds = [1.0, 25.0,5.0]
+
+    #optStruc.xtol_rel = 1e-12
+    optStruc.xtol_rel = 1.0e-16
+
+    Grad = zeros(3)  # dummy argument (uisng gradient free algorithm)
+    (maxf, maxx, ret) = optimize(optStruc, Pinit)
+
+end
