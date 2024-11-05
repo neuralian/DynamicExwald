@@ -1,5 +1,5 @@
 # test Neuralian Toolbox
-using Infiltrator
+using Infiltrator, Colors
 
 # static (spontaneous) simulation
 # test_Wald_sample(.013, 1.0)
@@ -14,66 +14,116 @@ function test_Wald_sample(mu::Float64, lambda::Float64)
     N = 5000  # sample size
     interval = zeros(N)
     Wald_sample(interval, mu, lambda)
-    histogram(interval, normalize=:pdf, nbins=100,
-        label=@sprintf "First passage times (%.3f, %.3f)" mu lambda)
-    t = DEFAULT_DT:DEFAULT_DT:(maximum(interval)*1.2)
-    plot!(t, pdf(InverseGaussian(mu, lambda), t),
-        label="Wald ($mu, $lambda)", linewidth=2.5, legend=:topleft, size=PLOT_SIZE)
-    xlims!(0.0, t[end])
+
+    F = Figure()
+    ax = Axis(F[1,1])
+    hist!(interval, normalization=:pdf, bins=100)
+       #  label=@sprintf "First passage times (%.3f, %.3f)" mu lambda)
+    t = DEFAULT_SIMULATION_DT:DEFAULT_SIMULATION_DT:(maximum(interval)*1.2)
+    lines!(t, pdf(InverseGaussian(mu, lambda), t), color = :red)
+    display(F)
+
+    #@infiltrate
+    xlims!(0.0, xlims(ax)[2])
+    text!(ax, 0.75*xlims(ax)[end], 0.75*ylims(ax)[end], text = "Wald ($mu, $lambda)")
+    # xlims!(0.0, t[end])
+    #display(F)
+    (F,ax)
 end
 
 # Compare Expsim histogram to Exponential 
-function test_Exponential_sample(tau::Float64, dt::Float64=DEFAULT_DT)
+function test_Exponential_sample(tau::Float64, dt::Float64=DEFAULT_SIMULATION_DT)
 
     N = 5000  # sample size
     interval = zeros(N)
     (m, s, threshold) = Exponential_sample(interval, tau)
-    histogram(interval, normalize=:pdf, nbins=100,
-        label=@sprintf "Threshold trigger (%.2f, %.2f, %.2f)" m s threshold)
+
+    F = Figure()
+    ax = Axis(F[1,1])
+    hist!(interval, normalization=:pdf, bins=200)
+
+     #   label=@sprintf "Threshold trigger (%.2f, %.2f, %.2f)" m s threshold)
     t = 0.0:dt:(maximum(interval)*1.2)
-    plot!(t, exp.(-t ./ tau) ./ tau, linewidth=2.5, size=PLOT_SIZE,
-        label=@sprintf "Exponential ( %.2f)" tau)  #pdf(InverseGaussian(mu, lambda), t))
+    lines!(t, exp.(-t ./ tau) ./ tau, linewidth=2.5, color = :red)
+     #   label=@sprintf "Exponential (τ = %.2f)" tau)  #pdf(InverseGaussian(mu, lambda), t))
     xlims!(0.0, t[end])
+    display(F)
+    text!(ax, 0.25*t[end], 0.85*ylims(ax)[end], color = :dodgerblue,
+        text =@sprintf "Threshold trigger (μ = %.2f, σ = %.2f, Thr = %.2f; τ = %.2f)" m s threshold tau)
+    text!(ax, 0.5*t[end], 0.75*ylims(ax)[end], color = :salmon1,
+        text =@sprintf "Exponential (τ = %.2f)" tau)
+   # @infiltrate
 end
 
 
-# dynamic simulation
-function inhomogenousPoisson_test(N)
+# Inhomogeneous Poisson by threshold-crossing with time-varying noise
+# N = number of intervals
+function inhomogenousPoisson_test(N, play_audio::Bool = false)
 
-    I = zeros(N)
-    # trigger levek for tau = 100ms with N(0,1) input noise
-    m0 = 10.0
-    trigger = TriggerThreshold_from_PoissonTau(m0, 1.0, 0.1)
-    #q(t) = t < 50.0 ? 9.5 : 10.0
-    f = 0.25
-    a = 0.25
-    q(t) = m0 + a * sin(2 * pi * f * t)
-    ThresholdTrigger_simulate(I, q, 1.0, trigger)
+    tau = 0.1     # mean interval at mean stimulus level (s)
+
+    f = 0.25    # stimulus frequency
+    a = 0.25    # amplitude
+    m0 = 10.0   # mean
+    s = 1.0     # noise s.d.
+    q(t) = m0 + a * sin(2 * pi * f * t)  # stimulus waveform
+
+    # sampling interval for GLR
+    dt = .001
+
+    I = zeros(N) # space for intervals
+
+    # trigger level with N(m0,1.0) input noise
+    trigger = TriggerThreshold_from_PoissonTau(m0, s, tau)
+
+    ThresholdTrigger_simulate(I, q, s, trigger)
+
     spt = cumsum(I)   # spike times from intervals
-    bs = s2b(spt, 1.0e-4)  # binary representation at 10KHz
+
+    #bs = s2b(spt, 1.0e-4)  # binary representation at 10KHz
     # soundsc(bs, 10000)     # play audio at 10KHz
-    gdt = 1.0e-3
-    r = GLR(spt, [0.5], gdt)
-    t = collect((1:length(r))) * gdt
-    splot(spt)
-    plot!(t, r, size=(1000, 800))
-    plot!(t, [q(x) for x in t])
+
+    (T,r) = GLR(spt, [0.5], dt)
+    
+    #@infiltrate
+    
+    # reverse-engineer τ from q
+    r0 = [1.0/PoissonTau_from_ThresholdTrigger(q(t), s, trigger, DEFAULT_SIMULATION_DT) for t in T]
+
+    F = Figure(size = (1600, 400))
+    ax = Axis(F[1,1])
+
+        ax.title = "Poisson Simulation"
+    
+    splot!(ax,spt)
+    lines!(T, r)
+    lines!(T, [q(x) for x in T])
+    lines!(T, r0, color = :salmon1)
+
+    display(F)
+
+    if play_audio
+        bs = s2b(spt, 1.0e-4)  # binary representation at 10KHz
+        soundsc(bs, 1.0e4) 
+    end
 
 end
 
-# dynamic simulation
-function inhomogenousWald_test(N)
+# Inhomogeneous Inverse Gaussian by simulating time-to-barrier
+#  with time-varying drift
+# N = number of intervals
+function inhomogenousWald_test(N, play_audio::Bool = false)
 
     I = zeros(N)
     # FPT process parameters for spontaneous Exwald
     mu = 0.013
     lambda = 0.1
-    dt = DEFAULT_DT
+    dt = DEFAULT_SIMULATION_DT
     (v0, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda)   # Drift speed, noise s.d. & barrier height for Wald component
 
     #q(t) = t < 50.0 ? 9.5 : 10.0
     f = 1.0
-    a = 20.0
+    a = 80.0
     q2(t) = v0 + a * sin(2 * pi * f * t)
     FirstPassageTime_simulate(I, q2, s, barrier, dt)
     #@infiltrate
@@ -81,26 +131,46 @@ function inhomogenousWald_test(N)
     spt = cumsum(I)   # spike times from intervals
 
     gdt = 1.0e-3
-    r = GLR(spt, [0.1], gdt)
-    t = collect((1:length(r))) * gdt
-    splot(spt, 20.0)
-    plot!(t, r, size=(1000, 400))
-    display(plot!(t, [q2(x) for x in t]))
-    bs = s2b(spt, 1.0e-4)  # binary representation at 10KHz
-    soundsc(bs, 10000)     # play audio at 10KHz
+    (t,r) = GLR(spt, [0.1], gdt)
+
+
+    F = Figure(size=(1600, 400))
+    ax = Axis(F[1,1])
+
+    ax.title = "Wald Simulation"
+
+    splot!(ax,spt, 20.0)
+    lines!(t, r)
+    plot!(t, [q2(x) for x in t], strokecolor = :salmon1, markersize = 1.0, strokewidth = 1.0)
+
+
+
+    display(F)
+
+    if play_audio
+        bs = s2b(spt, 1.0e-4)  # binary representation at 10KHz
+        soundsc(bs, 1.0e4)     # play audio at 10KHz
+    end
+
 end
 
 
 
-function test_Exwald_sample(mu, lambda, tau)
+# test Exwald sample generated by adding samples from Exponential and Wald distributions
+function test_Exwald_sample_sum(mu, lambda, tau)
 
     N = 5000  # sample size
-    I = zeros(N)
-    Exwald_sample(I, mu, lambda, tau)
+    I = Exwald_sample_sum(N, mu, lambda, tau)
+
     (v, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda)   # Drift speed, noise s.d. & barrier height for Wald component
     trigger = TriggerThreshold_from_PoissonTau(v, s, tau)            # threshold for Poisson component using same noise
-    histogram(I, normalize=:pdf, nbins=100, size=(800, 600),
-        label=@sprintf "Simulation (%.5f, %.5f, %.5f, %.2f)" v s barrier trigger)
+    
+    F = Figure()
+    ax = Axis(F[1,1])
+    ax.title = "Exwald Sample by sum of Exponential and Wald Samples"
+
+    hist!(I, normalization=:pdf, bins=100)
+    #    text!(ax, text = @sprintf "Simulation (%.5f, %.5f, %.5f, %.2f)" v s barrier trigger)
 
     dt = 1.0e-5
     T = maximum(I) * 1.2
@@ -111,75 +181,138 @@ function test_Exwald_sample(mu, lambda, tau)
     W = pdf(InverseGaussian(mu, lambda), t)
     P = exp.(-t ./ tau) ./ tau
 
-    plot!(t, W, linewidth=lw, size=PLOT_SIZE,
-        label=@sprintf "Wald (%.5f, %.5f)" mu lambda)
-    plot!(t, P, linewidth=lw, label=@sprintf "Exponential (%.5f)" tau)
-    plot!(t, X, linewidth=lw * 1.5, label=@sprintf "Exwald (%.5f, %.5f, %.5f)" mu lambda tau)
-    ylims!(0.0, max(maximum(X), maximum(W)) * 1.25)
+    lines!(t, W, linewidth = 2.0)
+
+    lines!(t, P, linewidth = 2.0)
+    #   text!(ax, text = @sprintf "Exponential (%.5f)" tau)
+    lines!(t, X, linewidth = 2.0)
+    #  text!( text = @sprintf "Exwald (%.5f, %.5f, %.5f)" mu lambda tau)
+
+    ymax = max(maximum(X), maximum(W)) * 1.25
+    ylims!(0.0, ymax )
     xlims!(0.0, T)
+
+    text!(ax, T/2.0, 0.8*ymax, text = @sprintf "μ = %5f " mu)
+    text!(ax, T/2.0, 0.75*ymax, text = @sprintf "λ =  %5f" lambda)
+    text!(ax, T/2.0, 0.7*ymax, text = @sprintf "τ =  %5f" tau)
     #@infiltrate
+
+    display(F)
 end
 
 
-function dynamicExwald_test(N, listen::Bool=false)
+# # test Exwald sample generated by simulating threshold trigger & drift-diffusion FPT
+function test_Exwald_sample_sim(mu, lambda, tau)
 
-    I = zeros(N)    # generate sample of size N 
+    N = 5000  # sample size
+    I =  Exwald_sample_sim(N, mu, lambda, tau)
 
-    # baseline (spontaneous) Exwald parameters
-    mu = 0.013
-    lambda = 0.1
-    tau = 0.01
+    (v, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda)   # Drift speed, noise s.d. & barrier height for Wald component
+    trigger = TriggerThreshold_from_PoissonTau(v, s, tau)            # threshold for Poisson component using same noise
+    
+    F = Figure()
+    ax = Axis(F[1,1])
+    ax.title = "Exwald Sample by Threshold Trigger & Drift-Diffusion First Passage Time"
 
-    dt = DEFAULT_DT  # just to be clear
+    hist!(I, normalization=:pdf, bins=100)
+    #    text!(ax, text = @sprintf "Simulation (%.5f, %.5f, %.5f, %.2f)" v s barrier trigger)
 
-    # First passage time model parameters for spontaneous Wald component 
-    (v0, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda)
+    dt = 1.0e-5
+    T = maximum(I) * 1.2
+    t = collect(dt:dt:T)
+    lw = 2.5
 
-    # trigger threshold for spontaneous (mean==tau) Exponwential samples  with N(v0,s) noise
-    trigger = TriggerThreshold_from_PoissonTau(v0, s, tau, dt)
+    X = Exwaldpdf(mu, lambda, tau, t)
+    W = pdf(InverseGaussian(mu, lambda), t)
+    P = exp.(-t ./ tau) ./ tau
 
-    # sinusoidaal stimulus (input noise mean) parameters
-    f = 1.0         # modulation frequency Hz (nb not spike frequency/firing rate)
-    a = 0.0        # modulation amplitude
+    lines!(t, W, linewidth = 2.0)
 
-    # stimulus waveform
-    q(t) = v0 + a * sin(2 * pi * f * t)
+    lines!(t, P, linewidth = 2.0)
+    #   text!(ax, text = @sprintf "Exponential (%.5f)" tau)
+    lines!(t, X, linewidth = 2.0)
+    #  text!( text = @sprintf "Exwald (%.5f, %.5f, %.5f)" mu lambda tau)
 
-    # Exwald samples by simulating physical model of FPT + Poisson process in series
-    Exwald_simulate(I, q, s, barrier, trigger, dt)
+    ymax = max(maximum(X), maximum(W)) * 1.25
+    ylims!(0.0, ymax )
+    xlims!(0.0, T)
+
+    text!(ax, T/2.0, 0.8*ymax, text = @sprintf "μ = %5f " mu)
+    text!(ax, T/2.0, 0.75*ymax, text = @sprintf "λ =  %5f" lambda)
+    text!(ax, T/2.0, 0.7*ymax, text = @sprintf "τ =  %5f" tau)
     #@infiltrate
 
-    # Exwald neuron spike times from Exwald intervals
-    spt = cumsum(I)   # spike times from intervals
-
-    # plot spike train
-    splot(spt, 20.0)
-
-    # Gaussian rate estimate
-    gdt = 1.0e-3                      # sample interval for GLR estimate
-    (t, r) = GLR(spt, [0.1], gdt)       # rate estimate r at sample times t
-
-    # plot rate estimate 
-    plot!((t, r), size=(1000, 400))
-    # plot stimulus
-    display(plot!(t, [q(x) for x in t]))
-
-    if listen
-        bs = s2b(spt, 1.0e-4)  # binary representation at 10KHz
-        soundsc(bs, 10000)     # play audio at 10KHz
-    end
+    display(F)
 end
+
+
+
+
+# function dynamicExwald_test(N, listen::Bool=false)
+
+#     I = zeros(N)    # generate sample of size N 
+
+#     # baseline (spontaneous) Exwald parameters
+#     mu = 0.013
+#     lambda = 0.1
+#     tau = 0.01
+
+#     dt = DEFAULT_SIMULATION_DT  # just to be clear
+
+#     # First passage time model parameters for spontaneous Wald component 
+#     (v0, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda)
+
+#     # trigger threshold for spontaneous (mean==tau) Exponwential samples  with N(v0,s) noise
+#     trigger = TriggerThreshold_from_PoissonTau(v0, s, tau, dt)
+
+#     # sinusoidaal stimulus (input noise mean) parameters
+#     f = 1.0         # modulation frequency Hz (nb not spike frequency/firing rate)
+#     a = 0.0        # modulation amplitude
+
+#     # stimulus waveform
+#     q(t) = v0 + a * sin(2 * pi * f * t)
+
+#     # Exwald samples by simulating physical model of FPT + Poisson process in series
+#     Exwald_simulate(I, q, s, barrier, trigger, dt)
+#     #@infiltrate
+
+#     # Exwald neuron spike times from Exwald intervals
+#     spt = cumsum(I)   # spike times from intervals
+
+#     # plot spike train
+#     splot(spt, 20.0)
+
+#     # Gaussian rate estimate
+#     gdt = 1.0e-3                      # sample interval for GLR estimate
+#     (t, r) = GLR(spt, [0.1], gdt)       # rate estimate r at sample times t
+
+#     # plot rate estimate 
+#     plot!((t, r), size=(1000, 400))
+#     # plot stimulus
+#     display(plot!(t, [q(x) for x in t]))
+
+#     if listen
+#         bs = s2b(spt, 1.0e-4)  # binary representation at 10KHz
+#         soundsc(bs, 10000)     # play audio at 10KHz
+#     end
+# end
 
 
 
 # test dynamic Exwald with no stimulus
 function test_Exwald_Neuron_spontaneous(N::Int64,
-    Exwald_param::Tuple{Float64,Float64,Float64}, dt::Float64=DEFAULT_DT)
+    Exwald_param::Tuple{Float64,Float64,Float64}, dt::Float64=DEFAULT_SIMULATION_DT)
 
     (mu, lambda, tau) = Exwald_param
     spt = Exwald_Neuron(N, (mu, lambda, tau), t -> 0.0)
-    histogram(diff(spt), bins=64, normalize=:pdf, label=@sprintf "Simulation")
-    xlims!(0.0, xlims()[2])
+
+
+    F = Figure()
+    ax = Axis(F[1,1])
+
+    hist!(diff(spt), bins=64, normalization=:pdf)
+    # label=@sprintf "Simulation")
+    #xlims!(0.0, xlims(ax)[2])
 
     T = maximum(diff(spt))
     t = collect(0.0:dt:T)
@@ -189,22 +322,34 @@ function test_Exwald_Neuron_spontaneous(N::Int64,
     P = exp.(-t ./ tau) ./ tau
 
     lw = 2.5
-    plot!(t, W, linewidth=lw, size=PLOT_SIZE,
-        label=@sprintf "Wald (%.5f, %.5f)" mu lambda)
-    plot!(t, P, linewidth=lw, label=@sprintf "Exponential (%.5f)" tau)
-    plot!(t, X, linewidth=lw * 1.5, label=@sprintf "Exwald (%.5f, %.5f, %.5f)" mu lambda tau)
-    ylims!(0.0, max(maximum(X), maximum(W)) * 1.25)
+    lines!(t, W, linewidth=lw)
+    #    label=@sprintf "Wald (%.5f, %.5f)" mu lambda)
+    lines!(t, P, linewidth=lw)
+    # label=@sprintf "Exponential (%.5f)" tau)
+    lines!(t, X, linewidth=lw * 1.5)
+    # label=@sprintf "Exwald (%.5f, %.5f, %.5f)" mu lambda tau)
+
+    ymax = max(maximum(X), maximum(W)) * 1.25
+    ylims!(0.0, ymax)
+
+
     xlims!(0.0, T)
-    ylims!(0.0, 2.0 * maximum(X))
-    title!("Exwald Neuron Model Spontaneous ISI")
-    #@infiltrate
+    # ylims!(0.0, 2.0 * maximum(X))
+    ax.title = "Exwald Neuron Model Spontaneous ISI"
+
+    text!(ax, T/2.0, 0.8*ymax, text = @sprintf "μ = %.5f" mu)
+    text!(ax, T/2.0, 0.75*ymax, text = @sprintf "λ = %.5f" lambda)
+    text!(ax, T/2.0, 0.7*ymax, text = @sprintf "τ = %.5f" tau)
+    
+    display(F)
+
 
 end
 
 # test dynamic Exwald with sinusoidal stimulus
 # stimulus parameters Stim_param = (A, F), A = amplitude, F = frequency (Hz)
 function test_Exwald_Neuron_sin(N::Int64,
-    Exwald_param::Tuple{Float64,Float64,Float64}, Stim_param::Tuple{Float64,Float64}, dt::Float64=DEFAULT_DT)
+    Exwald_param::Tuple{Float64,Float64,Float64}, Stim_param::Tuple{Float64,Float64}, dt::Float64=DEFAULT_SIMULATION_DT)
 
     # extract parameters
     (mu, lambda, tau) = Exwald_param
@@ -218,20 +363,45 @@ function test_Exwald_Neuron_sin(N::Int64,
     # simulate Exwald neuron
     spt = Exwald_Neuron(N, (mu, lambda, tau), stimulus)
 
-    # plot spike train
-    splot(spt, 20.0, 0.5)
+   # Gaussian rate estimate
+   gdt = 1.0e-3                      # sample interval for GLR estimate
+   (t, r) = GLR(spt, [0.05], gdt)       # rate estimate r at sample times t
 
-    # Gaussian rate estimate
-    gdt = 1.0e-3                      # sample interval for GLR estimate
-    (t, r) = GLR(spt, [0.1], gdt)       # rate estimate r at sample times t
+    #@infiltrate
+
+    # compute expected mean rate (1/mean interval) during stimulus
+    timevarying_τ = [PoissonTau_from_ThresholdTrigger(v.+stimulus(tt), s, trigger, DEFAULT_SIMULATION_DT) for tt in t]
+    timevarying_μ = [Wald_parameters_from_FirstpassageTimeModel(v.+stimulus(tt), s, barrier)[1] for tt in t]
+    timevarying_rate = 1.0./(timevarying_μ+timevarying_τ)
+
+    
+
+
+
+    Fig = Figure(size=(1200, 400))
+    ax = Axis(Fig[1,1])
+
+
+
+    # plot spike train
+    splot!(ax, spt, 20.)
+
+ 
+
+
 
     # plot rate estimate 
-    plot!((t, r), size=(1000, 400), linewidth=2.5)
+    lines!(t, r, linewidth=2.5)
+
+    # expected rate
+    lines!(t,timevarying_rate, linewidth = 2.5 )
 
     # plot spontaneous level
-    plot!([t[1], t[end]], v * [1.0, 1.0])
+    #lines!([t[1], t[end]], v * [1.0, 1.0])
     # plot stimulus
-    display(plot!(t, [v + stimulus(x) for x in t]))
+    lines!(t, [stimulus(x) for x in t], color = :salmon1, linewidth = 2.5)
+
+    display(Fig)
 
     return spt
 end
@@ -243,7 +413,7 @@ function test_Exwald_Neuron_phasedistribution(N::Int64,
     Exwald_param::Tuple{Float64,Float64,Float64},
     Stim_param::Tuple{Float64,Float64},
     phaseAngle::Vector{Float64},
-    dt::Float64=DEFAULT_DT)
+    dt::Float64=DEFAULT_SIMULATION_DT)
 
     # extract parameters
     (mu, lambda, tau) = Exwald_param
@@ -259,18 +429,39 @@ function test_Exwald_Neuron_phasedistribution(N::Int64,
 
     Npts = 128
     R0 = 1.0
-    plt = plot([R0 * sin(2.0 * pi * i / Npts) for i in 0:Npts],
-        [R0 * cos(2.0 * pi * i / Npts) for i in 0:Npts],
-        size=(800, 800), xlims=(-2.0, 2.0), ylims=(-2.0, 2.0),
-        bgcolor=:white, gridcolor=:white, showaxis=false, legend = false)
-    annotate!(0.0, 2.0, ("Exwald Model Neuron ISI Distribution during sinusoidal stimulus",
-        14, :center))
-    annotate!(0.0, 1.875, ("Top subplot is in phase with acceleration",
-        11, :center))
-    insetDiam = 0.18
-    R = 0.35 #  plot circle radius relative to width of parent axes
+    NP = length(phaseAngle)
+    FigRadius = 500.0
+
+    Fig = Figure(size = (2.0*FigRadius, 2.0*FigRadius))
+    ax0 = Axis(Fig[1,NP+1])
+    xlims!(ax0, 0., 1.)
+    ylims!(ax0, 0., 1.)
+    text!(ax0, .2, .95, fontsize = 24,
+        text = "Exwald Model Neuron ISI distribution during sinusoidal stimulus")
+    hidedecorations!(ax0)
+    hidespines!(ax0)
+    # xlims!(-2.0, 2.0)
+    # ylims!(-2.0, 2.0)
+
+    # plt = lines!([R0 * sin(2.0 * pi * i / Npts) for i in 0:Npts],
+    #     [R0 * cos(2.0 * pi * i / Npts) for i in 0:Npts])
+
+    #     size=(800, 800), xlims=(-2.0, 2.0), ylims=(-2.0, 2.0),
+    #     bgcolor=:white, gridcolor=:white, showaxis=false, legend = false)
+    # annotate!(0.0, 2.0, ("Exwald Model Neuron ISI Distribution during sinusoidal stimulus",
+    #     14, :center))
+    # annotate!(0.0, 1.875, ("Top subplot is in phase with acceleration",
+    #     11, :center))
+
+
+    insetPlotWide = 160.0
+    insetPlotHigh = 160.0
+    R = 0.7*FigRadius #  plot circle radius relative to width of parent axes
     spi = 1  # subplot index counter
-    for i in 1:length(phaseAngle)
+    ax = []
+    x0 = zeros(NP)
+    y0 = zeros(NP)    
+    for i in 1:NP
 
         phaseRadians = -phaseAngle[i] * pi / 180.0
 
@@ -278,9 +469,12 @@ function test_Exwald_Neuron_phasedistribution(N::Int64,
         # intervals at specified phase
         I0 = intervalPhase(spt, phaseAngle[i], F)
 
-        inset = (1, bbox(R * cos(phaseRadians), R * sin(phaseRadians),
-            insetDiam, insetDiam, :center, :center))
+        ax = (ax[:]..., Axis(Fig[1,i]))
+        x0[i] = round(FigRadius + R * cos(phaseRadians) - insetPlotWide/2.0)
+        y0[i] = round(FigRadius + R * sin(phaseRadians) - insetPlotHigh/2.0)
 
+
+       #setAxisBox(ax[i], x0, y0, insetPlotWide, insetPlotHigh)
 
         T = maximum(I0)
         t = collect(0.0:dt:T)
@@ -294,7 +488,6 @@ function test_Exwald_Neuron_phasedistribution(N::Int64,
         W = pdf(InverseGaussian(mu_model, lambda_model), t)
         P = exp.(-t ./ tau_model) ./ tau_model
 
-        #@infiltrate
 
         # y tick label visible at phase 0, x label visible at phase 180
         # if i==3
@@ -302,85 +495,115 @@ function test_Exwald_Neuron_phasedistribution(N::Int64,
         # else 
         #     ytickfontcolor = :white
         # end 
-        ytickfontcolor = :white
-        if i == 7
-            xtickfontcolor = :black
-        else
-            xtickfontcolor = :white
-        end
+
+
+        # ytickfontcolor = :white
+        # if i == 7
+        #     xtickfontcolor = :black
+        # else
+        #     xtickfontcolor = :white
+        # end
 
         lw = 1.0
         spi = spi + 1
-        H = histogram!(I0, bins=64,
-            normalize=:pdf, inset=inset, subplot=i + 1,
-            linewidth=0.1, framestyle=:box,
-            xticks=[0.02], xtickfontcolor=xtickfontcolor, xtickdirection=:out,
-            yticks=[250.0], ytickfontcolor=ytickfontcolor, ytickdirection=:out)
-        plot!(t, W, subplot=i + 1)
-        plot!(t, P, subplot=i + 1)
-        plot!(t, X, subplot=i + 1, linewidth=2.0, color=:darkblue, legend = false, 
-            xlims=(0.0, 0.04), ylims=(0.0, 400.0))
+        H = hist!(I0, bins=128, normalization=:pdf)
+
+        lines!(t, X, color = :salmon1)
+          
+        #     inset=inset, subplot=i + 1,
+        #     linewidth=0.1, framestyle=:box,
+        #     xticks=[0.02], xtickfontcolor=xtickfontcolor, xtickdirection=:out,
+        #     yticks=[250.0], ytickfontcolor=ytickfontcolor, ytickdirection=:out)
+
+        # plot!(t, W, subplot=i + 1)
+        # plot!(t, P, subplot=i + 1)
+        # plot!(t, X, subplot=i + 1, linewidth=2.0, color=:darkblue, legend = false, 
+        #     xlims=(0.0, 0.04), ylims=(0.0, 400.0))
 
 
     end # phase angles
 
+    display(Fig)  
 
-    # plot cycle 2
-    spi = spi + 1
-    wavelength = 1.0 / F
-    (t2, r2) = GLR(spt[findall(spt .< 3.0 * wavelength)], [0.1], dt)# GLR over 3 cycles
-    i2 = Int(round(wavelength / dt)):Int(round(2.0 * wavelength / dt)) # index 2nd cycle
-    r2 = r2[i2]            # extract 2nd cycle
-    t2 = (1:length(r2)) * dt
-
-    spt2 = spt[findall((spt .>= wavelength) .* (spt .< 2 * wavelength))] .- wavelength
+    xmax = -99.0
+    ymax = -99.0
+    for i in 1:NP
+        xmax = max(xmax, xlims(ax[i])[2])
+        ymax = max(ymax, ylims(ax[i])[2])
+    end
 
 
+    for i in 1:NP
+        xlims!(ax[i], 0.0, 0.2) #xmax)
+        ax[i].xticks = vec([-1])
+        ylims!(ax[i], 0.0, ymax)
+        ax[i].yticks = vec([-1])
+    end
+    ax[1].xticks = vec([.2])
 
-    centerPlot = plot!(t2, r2, color=:green, linewidth=2.0,
-        inset=bbox(0.0175, -0.025, 0.4, 0.1, :center, :center),
-        framestyle=:box, xticks=[0.0, 1.0], xlims=(0.0, 1.0),
-        ylims=(0.0, 100.0), yticks=[50.0], ytickfontcolor=:white,
-        subplot=spi)
+    for i in 1:NP
+        setAxisBox(ax[i], x0[i], y0[i], insetPlotWide, insetPlotHigh)
+    end
+
+    setAxisBox(ax0, 0.0, 0.0, 2.0*FigRadius, 2.0*FigRadius)
+
+    @infiltrate
+
+    # # plot cycle 2
+    # spi = spi + 1
+    # wavelength = 1.0 / F
+    # (t2, r2) = GLR(spt[findall(spt .< 3.0 * wavelength)], [0.1], dt)# GLR over 3 cycles
+    # i2 = Int(round(wavelength / dt)):Int(round(2.0 * wavelength / dt)) # index 2nd cycle
+    # r2 = r2[i2]            # extract 2nd cycle
+    # t2 = (1:length(r2)) * dt
+
+    # spt2 = spt[findall((spt .>= wavelength) .* (spt .< 2 * wavelength))] .- wavelength
 
 
-    splot!(spt2, 20.0, spi)
 
-    #@infiltrate
-    plot!(t2, v .+ [30.0 * stimulus(t) for t in t2], subplot=spi,
-        linewidth=2.0, color=:pink)
+    # centerPlot = plot!(t2, r2, color=:green, linewidth=2.0,
+    #     inset=bbox(0.0175, -0.025, 0.4, 0.1, :center, :center),
+    #     framestyle=:box, xticks=[0.0, 1.0], xlims=(0.0, 1.0),
+    #     ylims=(0.0, 100.0), yticks=[50.0], ytickfontcolor=:white,
+    #     subplot=spi)
 
-    annotate!(0.65, 90.0, ("acceleration", 10, :pink))
-    annotate!(0.25, 60.0, ("GLR", 10, :green))
-    # lw = 2.5
-    # plot!(t, W, linewidth=lw, size=PLOT_SIZE,
-    #     label=@sprintf "Wald (%.5f, %.5f)" mu_p lambda_model)
-    # plot!(t, P, linewidth=lw, label=@sprintf "Exponential (%.5f)" tau_model)
-    # plot!(t, X, linewidth=lw * 1.5, label=@sprintf "Exwald (%.5f, %.5f, %.5f)" mu_p lambda_model tau_model)
-    # ylims!(0.0, max(maximum(X), maximum(W)) * 1.25)
-    # xlims!(0.0, T)
-    # ylims!(0.0, 2.0*maximum(X))
-    # display(title!("Exwald Neuron Model ISI at phase angle $phaseAngle"))
 
-    display(plt)
+    # splot!(spt2, 20.0, spi)
 
-    # png("nameThisFigure")
+    # #@infiltrate
+    # plot!(t2, v .+ [30.0 * stimulus(t) for t in t2], subplot=spi,
+    #     linewidth=2.0, color=:pink)
 
-    spt
+    # annotate!(0.65, 90.0, ("acceleration", 10, :pink))
+    # annotate!(0.25, 60.0, ("GLR", 10, :green))
+    # # lw = 2.5
+    # # plot!(t, W, linewidth=lw, size=PLOT_SIZE,
+    # #     label=@sprintf "Wald (%.5f, %.5f)" mu_p lambda_model)
+    # # plot!(t, P, linewidth=lw, label=@sprintf "Exponential (%.5f)" tau_model)
+    # # plot!(t, X, linewidth=lw * 1.5, label=@sprintf "Exwald (%.5f, %.5f, %.5f)" mu_p lambda_model tau_model)
+    # # ylims!(0.0, max(maximum(X), maximum(W)) * 1.25)
+    # # xlims!(0.0, T)
+    # # ylims!(0.0, 2.0*maximum(X))
+    # # display(title!("Exwald Neuron Model ISI at phase angle $phaseAngle"))
+
+    display(Fig)
+
+    # # png("nameThisFigure")
+
+    # spt
 
 end
 
 
-# test fitting Exwald model to model-generated ISI data
+# test fit stationary Exwald distribution to spontaneous Exwald neuron model
 # N = sample size
-function test_fit_Exwald_to_ISI(N::Int64, mu::Float64, lambda::Float64, tau::Base.Float64)
+function test_fit_Exwald_neuron_stationary(N::Int64, mu::Float64, lambda::Float64, tau::Base.Float64)
 
-    # simulate N spontaneous spikes (= N intervals, starting from t==0)
-    #ISI = Exwald_Neuron( N, (mu, lambda, tau), t -> 0.0, DEFAULT_DT, true )
 
-    ISI = Exwald_sample_sum(N, mu, lambda, tau)
+    # spontaneous interspike intervals 
+    ISI =  diff(vcat([0.0], Exwald_Neuron(N, (mu, lambda, tau), t->0.0)))
 
-    (maxf, p, ret) = Fit_Exwald_to_ISI(ISI, [0.5, 0.5, 0.5])
+    (maxf, p, ret) = Fit_Exwald_to_ISI(ISI, [mu, lambda, tau],  [0.1, 0.1, 0.1])
 
     dt = 1.0e-3
     T = maximum(ISI)
@@ -396,14 +619,15 @@ end
 
 # Extract ISI distribution for Exwald model neuron at specified phases of sinusoidal stimulus
 # fit Exwald models to ISI data
-# Plot estimated Exwald parameters vs (known) model parameters at each phase
+# Plot estimated Exwald parameters vs instantaneous model parameters at fitAngles
 #   0 <= phase <= 360
 # eg call  test_fit_Exwald_Neuron_phasedistribution(50000, (.013, .1, .01), (1.0, 2.0), collect(0.0:45.0:360.));
 function test_fit_Exwald_Neuron_phasedistribution(N::Int64,
     Exwald_param::Tuple{Float64,Float64,Float64},
     Stim_param::Tuple{Float64,Float64},
-    phaseAngle::Vector{Float64},
-    dt::Float64=DEFAULT_DT)
+    phaseAngle::Vector{Float64}, fitAngle::Vector{Float64}=phaseAngle,
+    endAtclosestSpike::Bool = false,
+    dt::Float64=DEFAULT_SIMULATION_DT)
 
     # extract parameters
     (mu, lambda, tau) = Exwald_param
@@ -413,31 +637,37 @@ function test_fit_Exwald_Neuron_phasedistribution(N::Int64,
 
     # sinusoidal stimulus
     stimulus(t) = A * sin(2 * π * F * t)
-
-    # simulate Exwald neuron
-    spt = Exwald_Neuron(N, (mu, lambda, tau), stimulus)
-
+    #stimulus(t) = A * sign(sin(2 * π * F * t))    
+    # function stimulus(t)
+        
+    #     if sin(2 * π * F * t)^2 > 0.5
+    #         return A*sign(sin(2 * π * F * t))
+    #     else
+    #         return(0.0)
+    #     end
+    # end
+    
     Nphases = length(phaseAngle)
 
     # layout plot window
     # top row for histograms, bottom row for parameter fits
     lyt = @layout [
-        grid(1,Nphases){.1h}
+        grid(1,Nphases){.25h}
         grid(3,1) 
     ]
     
     Npts = 128
     R0 = 1.0
     plt = plot(layout = lyt,
-        size=(800, 800), bgcolor=:white, gridcolor=:white, showaxis=false)
-
-
+        size=(1200, 1200), bgcolor=:white, gridcolor=:white, showaxis=false)
+    ytickfontcolor = :white
+    xtickfontcolor = :white
 
 #     @infiltrate
 
 
-    R = 0.35 #  plot circle radius relative to width of parent axes
-    spi = 1  # subplot index counter
+    # R = 0.35 #  plot circle radius relative to width of parent axes
+    # spi = 1  # subplot index counter
 
 
     # Extract interval lengths at specified phases of stimulus
@@ -448,17 +678,28 @@ function test_fit_Exwald_Neuron_phasedistribution(N::Int64,
     inset_w = 0.2
 
     # arrays to hold fitted parameters
+
     mu_hat = zeros(Nphases)
     lambda_hat = zeros(Nphases)
     tau_hat = zeros(Nphases)
 
+    # timescale for model evaluation (time delay from last spike)
+    Td = 5.0*(mu+tau)
+    td = collect(0.0:dt:Td)
+
+
+    # simulate Exwald neuron
+    spt = Exwald_Neuron(N, (mu, lambda, tau), stimulus)
+
+    #@infiltrate
+
     for i in 1:Nphases
 
-        phaseRadians = -phaseAngle[i] * pi / 180.0
+       # phaseRadians = -phaseAngle[i] * pi / 180.0
 
 
         # intervals at ith phase angle
-        ISI_i = intervalPhase(spt, phaseAngle[i], F)
+        ISI_i = intervalPhase_independent(spt, phaseAngle[i], F)
 
         # fit model
         (maxf, p, ret) = Fit_Exwald_to_ISI(ISI_i, [0.5, 0.5, 0.5])
@@ -474,9 +715,7 @@ function test_fit_Exwald_Neuron_phasedistribution(N::Int64,
         (mu_model, lambda_model) = Wald_parameters_from_FirstpassageTimeModel(v, s, barrier)
         tau_model = PoissonTau_from_ThresholdTrigger(v, s, trigger, dt)
 
-        # timescale for model evaluation (time delay from last spike)
-        Td = 5.0*(mu+tau)
-        td = collect(0.0:dt:Td)
+
         
         # evaluate "true" Exwald model pdf and its Ex- and -Wald components
         Exwald_model   = Exwaldpdf(mu_model, lambda_model, tau_model, td)
@@ -488,27 +727,8 @@ function test_fit_Exwald_Neuron_phasedistribution(N::Int64,
 
         #@infiltrate
 
-        # specify inset subplot within plt for drawing ith ISI histogram + fitted and theoretical model
-       # inset = (1, bbox(x_inset_offset, y_inset_offset + (i-1)*inset_h, inset_w, 0.8*inset_h, :bottom, :left))
-
-
-
-
-        # y tick label visible at phase 0, x label visible at phase 180
-        # if i==3
-        #     ytickfontcolor = :black
-        # else 
-        #     ytickfontcolor = :white
-        # end 
-        ytickfontcolor = :white
-        if i == 7
-            xtickfontcolor = :black
-        else
-            xtickfontcolor = :white
-        end
-#title = @sprintf "%.0f" 30.0*i, titlecolor = :black, 
         lw = 2.0
-        spi = spi + 1
+#
         H = histogram!(ISI_i, bins=0:1.0e-3:Td,
             normalize=:pdf, subplot=i, 
             linewidth=0.1, framestyle=:box,
@@ -521,9 +741,10 @@ function test_fit_Exwald_Neuron_phasedistribution(N::Int64,
         plot!(td, Exwald_fitted, subplot=i, linewidth=lw, color=:crimson)   
         mytext =  @sprintf "%2.0f°" phaseAngle[i]
         annotate!(0.05, 60.0, 
-            text(mytext, 10), subplot = i)     
+            text(mytext, 20), subplot = i)     
        # annotate!(0.03, 80.0, text("Hello")      )
 
+       #@infiltrate
 
     end # phase angles
 
@@ -535,9 +756,9 @@ function test_fit_Exwald_Neuron_phasedistribution(N::Int64,
     lambda_dynamic = zeros(Ns)
     tau_dynamic    = zeros(Ns)
 
-    @infiltrate
+#    @infiltrate
     for i in 1:Ns 
-        v = v0 + stimulus( θ[i]/(360.0*F))  
+        v = v0 + stimulus(θ[i]/(360.0*F))  
         (mu_dynamic[i], lambda_dynamic[i]) = 
              Wald_parameters_from_FirstpassageTimeModel(v, s, barrier)
         tau_dynamic[i] = PoissonTau_from_ThresholdTrigger(v, s, trigger, dt)
@@ -546,32 +767,88 @@ function test_fit_Exwald_Neuron_phasedistribution(N::Int64,
 
     #@infiltrate
 
-    # plot model mu during stimulus
+    # plot modeland fitted  mu during stimulus
     ymin = minimum(mu_dynamic)
     ymax = maximum(mu_dynamic)
     yrange = ymax - ymin
+
     plot!(θ, mu_dynamic, 
-        ylims=(ymin - 0.25*yrange, ymax + 0.25*yrange), framestyle=:box, legend = false, 
+        ylims=(0.005, .025), framestyle=:box, legend = false, color = :dodgerblue, 
+        xtick = phaseAngle, linewidth = 4, 
         showaxis = true, subplot = Nphases + 1)
-    ymin = minimum(lambda_dynamic)
-    ymax = maximum(lambda_dynamic)
-    yrange = ymax - ymin
-    plot!(θ, lambda_dynamic,  
-        ylims=(ymin - 0.25*yrange, ymax + 0.25*yrange), framestyle=:box, legend = false, 
+    plot!(θ, mu*ones(length(θ)), 
+        linewidth = 1.5, color = :seagreen, linestyle = :dash, subplot = Nphases + 1)
+ 
+   
+    # plot model and fitted lambda
+    plot!(θ, lambda_dynamic,  xtick = phaseAngle,
+        ylims=(0.0, 0.2), framestyle=:box, legend = false,  lw = 4, color = :dodgerblue, 
         showaxis = true, subplot = Nphases + 2)
+
+
+    # plot model and fitted tau
     ymin = minimum(tau_dynamic)
     ymax = maximum(tau_dynamic)
     yrange = ymax - ymin    
-    plot!(θ, tau_dynamic,  
-        ylims=(ymin - 0.25*yrange, ymax + 0.25*yrange), legend = false, 
-        showaxis = true, framestyle=:box, subplot = Nphases + 3)    
+    plot!(θ, tau_dynamic,  xtick = phaseAngle,
+        ylims=(-0.00, 0.04), legend = false,  linewidth = 4, color = :dodgerblue, 
+        showaxis = true, framestyle=:box, subplot = Nphases + 3) 
+    plot!(θ, tau*ones(length(θ)), 
+        linewidth = 1.5, color = :seagreen, linestyle = :dash, subplot = Nphases + 3)   
+
+    pcolor = :firebrick
+    msize = 2
+    msw = 0.1
+    scatter!(phaseAngle, mu_hat, 
+        subplot = Nphases + 1, color = pcolor, 
+        ms = msize, markerstrokewidth = msw)  
+    annotate!(45.0, .02, text("μ", 30, :dodgerblue), subplot = Nphases+1)
+    scatter!(phaseAngle, lambda_hat, 
+        subplot = Nphases + 2, color = pcolor, 
+        ms = msize, markerstrokewidth = msw)  
+    annotate!(45.0, .15, text("λ", 30, :dodgerblue), subplot = Nphases+2)
+    scatter!(phaseAngle, tau_hat, 
+        subplot = Nphases + 3, color = pcolor, 
+        ms = msize, markerstrokewidth = msw)  
+    annotate!(45.0, .025, text("τ", 30, :dodgerblue), subplot = Nphases+3)
 
 
+    Nfit = length(fitAngle)
+    mu_hatf = zeros(Nfit)
+    lambda_hatf = zeros(Nfit)
+    tau_hatf = zeros(Nfit)
+    for rep = 1:3
+        # simulate Exwald neuron
+        spt = Exwald_Neuron(N, (mu, lambda, tau), stimulus)    
+        
+        for i in 1:Nfit
+            # intervals at ith phase angle
+            ISI_i = intervalPhase_independent(spt, fitAngle[i], F)
 
+            # fit model
+            (maxf, p, ret) = Fit_Exwald_to_ISI(ISI_i, collect(Exwald_param),  collect(Exwald_param))
+
+            mu_hatf[i]     = p[1]
+            lambda_hatf[i] = p[2]
+            tau_hatf[i]    = p[3]
+        end
+        scatter!(fitAngle, mu_hatf, 
+            subplot = Nphases + 1, color = pcolor, 
+            ms = msize, markerstrokewidth = msw)
+        scatter!(fitAngle, lambda_hatf, 
+            subplot = Nphases + 2, color = pcolor, 
+            ms = msize, markerstrokewidth = msw)
+        scatter!(fitAngle, tau_hatf, 
+            subplot = Nphases + 3, color = pcolor, 
+            ms = msize, markerstrokewidth = msw)  
+
+    end #rep
 
     display(plt)
 
     # png("nameThisFigure")
+
+    #@infiltrate
 
     (mu_hat, lambda_hat, tau_hat, spt)
 
