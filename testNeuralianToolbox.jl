@@ -418,8 +418,8 @@ function test_Exwald_Neuron_phasedistribution(N::Int64,
     # extract parameters
     (mu, lambda, tau) = Exwald_param
     (A, F) = Stim_param
-    (v, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda)   # Drift speed, noise s.d. & barrier height for Wald component
-    trigger = TriggerThreshold_from_PoissonTau(v, s, tau, dt)            # threshold for Poisson component using same noise
+    (v0, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda)   # Drift speed, noise s.d. & barrier height for Wald component
+    trigger = TriggerThreshold_from_PoissonTau(v0, s, tau, dt)            # threshold for Poisson component using same noise
 
     # sinusoidal stimulus
     stimulus(t) = A * sin(2 * π * F * t)
@@ -427,19 +427,71 @@ function test_Exwald_Neuron_phasedistribution(N::Int64,
     # simulate Exwald neuron
     spt = Exwald_Neuron(N, (mu, lambda, tau), stimulus)
 
+    # rate estimate
+    dt4glr = 0.01
+    (tx, glrate) = GLR(spt, [0.1], dt4glr);
+
     Npts = 128
     R0 = 1.0
     NP = length(phaseAngle)
     FigRadius = 500.0
 
     Fig = Figure(size = (2.0*FigRadius, 2.0*FigRadius))
+
+    # ax0 allows text to be placed anywhere on the figure
     ax0 = Axis(Fig[1,NP+1])
     xlims!(ax0, 0., 1.)
     ylims!(ax0, 0., 1.)
     text!(ax0, .2, .95, fontsize = 24,
-        text = "Exwald Model Neuron ISI distribution during sinusoidal stimulus")
+    text = "Exwald Model Neuron ISI distribution during sinusoidal stimulus")
+    text!(ax0, .5, .73, fontsize = 12, align = (:center, :center), text = "Peak Stimulus")
+    text!(ax0, .05, .92, fontsize = 16, text = "Model Parameters (spontaneous):")
+    h0 = .9
+    dh = .02
+    text!(ax0, .125, h0, fontsize = 16, text = @sprintf "μ = %0.4f" mu)
+    text!(ax0, .125, h0-dh, fontsize = 16, text = @sprintf "λ = %0.4f" lambda)    
+    text!(ax0, .125, h0-2*dh, fontsize = 16, text = @sprintf "τ = %0.4f" tau)
+
+    text!(ax0, .65, .92, fontsize = 16, text = "Stimulus Parameters:")
+    h0 = .9
+    dh = .02
+    text!(ax0, .7, h0, fontsize = 16, text = @sprintf "Amplitude = %0.1f (%.4f x drift)" A A/v0)
+    text!(ax0, .7, h0-dh, fontsize = 16, text = @sprintf "Frequency = %0.1fHz" F)    
+    #text!(ax0, .5, .24, fontsize = 12, align = (:center, :center), text = "Minimum Stimulus")
+    # text!(ax0, .05, .5, fontsize = 12, align = (:center, :center), rotation = pi/2,
+    #                     text = "Increasing")
+    # text!(ax0, .95, .5, fontsize = 12, align = (:center, :center), rotation = -pi/2, 
+    #                     text = "Decreasing")
     hidedecorations!(ax0)
-    hidespines!(ax0)
+
+    # ax1 shows stimulus, spike train and rate
+    ax1 = Axis(Fig[1, NP+2], title = "1 stimulus cycle + spikes during 2nd cycle")
+    xlims!(ax1, 0., 1.0/F)
+    ax1.xticks = vec([-1])
+    ax1_width = 0.75*FigRadius
+    ax1_height = ax1_width/(1.0+sqrt(5))
+    period = 1.0/F
+    t1 = collect(0.0:dt4glr:period)
+    lines!(ax1, t1, [stimulus(t) for t in t1])   # plot 1 cycle of stimulus
+    display(Fig)  # to compute axis limits
+    splot!(ax1, spt[minimum(findall(spt.>period)):maximum(findall(spt.<2.0*period))] .- period,
+          ylims(ax1)[2]/4.0, 1.0, :dodgerblue)
+    #lines!(ax1, [0.0, period], [0.0, 0.0], color = :dodgerblue)      
+
+    # ax2 shows rate in every cycle except first and last (ignore edge effects in GLR)
+    Nperiods = Int(min(floor(maximum(spt)/period), 128))
+    ax2 = Axis(Fig[1, NP+3], title = @sprintf "Rate (%0.0f cycles)" Nperiods)
+    xlims!(ax2, 0.0, 1.0/F)
+
+    ns = Int(period/dt4glr)  # number of glr samples in period
+    averageRate = zeros(ns+1)
+    for i in 2:Nperiods
+        averageRate = averageRate + glrate[((i-1)*ns).+(0:ns)]
+        lines!(ax2, t1, glrate[((i-1)*ns).+(0:ns)], linewidth = 0.5)
+    end
+    lines!(ax2, t1, averageRate./Nperiods, linewidth = 4.0, color = :white)
+    lines!(ax2, t1, averageRate./Nperiods, linewidth = 2.0, color = :black)
+    #hidespines!(ax0)
     # xlims!(-2.0, 2.0)
     # ylims!(-2.0, 2.0)
 
@@ -467,11 +519,11 @@ function test_Exwald_Neuron_phasedistribution(N::Int64,
 
 
         # intervals at specified phase
-        I0 = intervalPhase(spt, phaseAngle[i], F)
+        I0 = intervalPhase(spt, phaseAngle[i], F, true)
 
-        ax = (ax[:]..., Axis(Fig[1,i]))
-        x0[i] = round(FigRadius + R * cos(phaseRadians) - insetPlotWide/2.0)
-        y0[i] = round(FigRadius + R * sin(phaseRadians) - insetPlotHigh/2.0)
+        ax = (ax[:]..., Axis(Fig[1,i], xlabel = @sprintf "%.0f° " phaseAngle[i] ))
+        x0[i] = round(FigRadius - R * cos(phaseRadians) - insetPlotHigh/2.0)       
+        y0[i] = round(FigRadius - R * sin(phaseRadians) - insetPlotHigh/2.0)
 
 
        #setAxisBox(ax[i], x0, y0, insetPlotWide, insetPlotHigh)
@@ -480,9 +532,11 @@ function test_Exwald_Neuron_phasedistribution(N::Int64,
         t = collect(0.0:dt:T)
 
         # predicted Distributions
-        v_p = v + stimulus(phaseAngle[i] / (360.0 * F))
-        (mu_model, lambda_model) = Wald_parameters_from_FirstpassageTimeModel(v_p, s, barrier)
-        tau_model = PoissonTau_from_ThresholdTrigger(v_p, s, trigger, dt)
+        v = v0 + stimulus(phaseAngle[i] / (360.0 * F)) # stimulus at phaseAngle[i]
+        (mu_model, lambda_model) = Wald_parameters_from_FirstpassageTimeModel(v, s, barrier)
+        tau_model = PoissonTau_from_ThresholdTrigger(v, s, trigger, dt)
+
+       # @infiltrate
 
         X = Exwaldpdf(mu_model, lambda_model, tau_model, t)
         W = pdf(InverseGaussian(mu_model, lambda_model), t)
@@ -523,6 +577,8 @@ function test_Exwald_Neuron_phasedistribution(N::Int64,
 
     end # phase angles
 
+ 
+
     display(Fig)  
 
     xmax = -99.0
@@ -539,15 +595,22 @@ function test_Exwald_Neuron_phasedistribution(N::Int64,
         ylims!(ax[i], 0.0, ymax)
         ax[i].yticks = vec([-1])
     end
-    ax[1].xticks = vec([.2])
+    #ax[1].xticks = vec([.2])
 
+    # plots are complete
+    lines!(ax[1], [0.125, 0.175], 0.2*ymax*[1.0, 1.0], color = :black, linewidth = 2)
+    text!(ax[1], .15, .25*ymax, text = "50ms", align = (:center,:center))
+
+    # plots are complete, now move them into position
     for i in 1:NP
         setAxisBox(ax[i], x0[i], y0[i], insetPlotWide, insetPlotHigh)
     end
-
     setAxisBox(ax0, 0.0, 0.0, 2.0*FigRadius, 2.0*FigRadius)
-
-    @infiltrate
+    setAxisBox(ax1, FigRadius - ax1_width/2.0, FigRadius + 0.1*ax1_height,
+                    ax1_width, ax1_height)
+    setAxisBox(ax2, FigRadius - ax1_width/2.0, FigRadius - 1.1*ax1_height,
+                    ax1_width, ax1_height)
+    #@infiltrate
 
     # # plot cycle 2
     # spi = spi + 1

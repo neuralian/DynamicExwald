@@ -24,12 +24,12 @@ function splot(spiketime::Vector{Float64}, height::Float64=1.0, lw::Float64=1.0)
 end
 
 
-function splot!(ax::Axis, spiketime::Vector{Float64}, height::Float64=1.0, lw::Int=1)
+function splot!(ax::Axis, spiketime::Vector{Float64}, height::Float64=1.0, lw::Float64=1.0, color = :blue)
 
 
     spikes = linesegments!(ax, vec([( Point2f(t, 0.0), Point2f(t, height)) for t in spiketime]),
-        linewidth = lw, color = :blue)
-    baseline = lines!(ax, [spiketime[1], spiketime[end] ], [0.0, 0.0], color = :blue)
+        linewidth = lw, color = color)
+    baseline = lines!(ax, [xlims(ax)[1], xlims(ax)[2]], [0.0, 0.0], color = color)
     (spikes, baseline)
 end
 
@@ -55,8 +55,8 @@ function GLR(spiketime::Vector{Float64}, sd::Vector{Float64}, dt::Float64, pad::
     end
 
 
-    print("length(spiketime) = "), println(length(spiketime))
-    print("pad= "), println(pad)
+    # print("length(spiketime) = "), println(length(spiketime))
+    # print("pad= "), println(pad)
 
     if pad > 0.0
         ifront = findall(spiketime[:] .< pad)[end:-1:1]  # indices of front pad spikes in reverse order (mirror) 
@@ -65,7 +65,7 @@ function GLR(spiketime::Vector{Float64}, sd::Vector{Float64}, dt::Float64, pad::
         spiketime = pad .+ vcat(2.0 * spiketime[1] .- spiketime[ifront[1:end-1]], spiketime, 2.0 * spiketime[iback[1]] .- spiketime[iback[2:end]])
         sd = vcat(sd[ifront[2:end]], sd, sd[iback[2:end]])
     end
-    print("length(spiketime) = "), println(length(spiketime))
+    # print("length(spiketime) = "), println(length(spiketime))
 
     # vector to hold result
     padN = Int(ceil(pad / dt))    # pad lengths
@@ -314,15 +314,15 @@ function Exwald_simulate(interval::Vector{Float64},
 
     while i <= length(interval)  # generate spikes until interval vector is full
 
-        while x < barrier                                   # until reached barrier
-            t = t + dt                                      # time update
-            x = x + v(t - dt) * dt + s * randn(1)[] * sqrt(dt)   # integrate noise
+        while x < barrier                                   # until reached barrier                                # time update
+            x = x + v(t) * dt + s * randn(1)[] * sqrt(dt)   # integrate noise
+            t = t + dt      
         end
         interval[i] = t - t0                        # record time to barrier (Wald sample)
         x = x - barrier                             # reset integral
         t0 = t                                      # next interval start time
-
-        while (v(t - dt) + s * randn()[]) < trigger          # tick until noise crosses trigger level
+  
+        while (v(t) + s * randn()[]) < trigger          # tick until noise crosses trigger level
             t = t + dt
         end
         interval[i] += t - t0                           # add Exponential sample to Wald sample
@@ -754,7 +754,7 @@ end
 # Figure size must have been specified
 function setAxisBox(ax::Axis, x0::Float64, x1::Float64, y0::Float64, y1::Float64)
 
-    ax.scene.viewport[] = Rect(Vec(x0, x1), Vec(y0, y1))
+    ax.scene.viewport[] = Rect(Vec(round(x0), round(x1)), Vec(round(y0), round(y1)))
 
 end
 
