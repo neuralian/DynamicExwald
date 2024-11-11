@@ -445,38 +445,34 @@ function test_Exwald_Neuron_phasedistribution(N::Int64,
     text!(ax0, .2, .95, fontsize = 24,
     text = "Exwald Model Neuron ISI distribution during sinusoidal stimulus")
     text!(ax0, .5, .73, fontsize = 12, align = (:center, :center), text = "Peak Stimulus")
-    text!(ax0, .05, .92, fontsize = 16, text = "Model Parameters (spontaneous):")
+    text!(ax0, .05, .92, fontsize = 16, text = "Spontaneous Model Parameters:")
     h0 = .9
     dh = .02
     text!(ax0, .125, h0, fontsize = 16, text = @sprintf "μ = %0.4f" mu)
     text!(ax0, .125, h0-dh, fontsize = 16, text = @sprintf "λ = %0.4f" lambda)    
     text!(ax0, .125, h0-2*dh, fontsize = 16, text = @sprintf "τ = %0.4f" tau)
+    text!(ax0, .125, h0-3*dh, fontsize = 14, 
+    text = @sprintf "Rate = %0.1f, CV = %0.2f, CV* = %0.2f" 1.0/(mu+tau) CV_fromExwaldModel(mu, lambda, tau) CVStar_fromExwaldModel(mu, lambda, tau))
 
     text!(ax0, .65, .92, fontsize = 16, text = "Stimulus Parameters:")
     h0 = .9
     dh = .02
     text!(ax0, .7, h0, fontsize = 16, text = @sprintf "Amplitude = %0.1f (%.4f x drift)" A A/v0)
     text!(ax0, .7, h0-dh, fontsize = 16, text = @sprintf "Frequency = %0.1fHz" F)    
-    #text!(ax0, .5, .24, fontsize = 12, align = (:center, :center), text = "Minimum Stimulus")
-    # text!(ax0, .05, .5, fontsize = 12, align = (:center, :center), rotation = pi/2,
-    #                     text = "Increasing")
-    # text!(ax0, .95, .5, fontsize = 12, align = (:center, :center), rotation = -pi/2, 
-    #                     text = "Decreasing")
     hidedecorations!(ax0)
 
     # ax1 shows stimulus, spike train and rate
-    ax1 = Axis(Fig[1, NP+2], title = "1 stimulus cycle + spikes during 2nd cycle")
+    ax1 = Axis(Fig[1, NP+2], title = "Stimulus & spikes during one cycle")
     xlims!(ax1, 0., 1.0/F)
     ax1.xticks = vec([-1])
     ax1_width = 0.75*FigRadius
     ax1_height = ax1_width/(1.0+sqrt(5))
     period = 1.0/F
     t1 = collect(0.0:dt4glr:period)
-    lines!(ax1, t1, [stimulus(t) for t in t1])   # plot 1 cycle of stimulus
+    lines!(ax1, t1, [stimulus(t) for t in t1], color = :black, linewidth = 1.0)   # plot 1 cycle of stimulus
     display(Fig)  # to compute axis limits
     splot!(ax1, spt[minimum(findall(spt.>period)):maximum(findall(spt.<2.0*period))] .- period,
-          ylims(ax1)[2]/4.0, 1.0, :dodgerblue)
-    #lines!(ax1, [0.0, period], [0.0, 0.0], color = :dodgerblue)      
+          ylims(ax1)[2]/4.0, 1.0, :navyblue)   
 
     # ax2 shows rate in every cycle except first and last (ignore edge effects in GLR)
     Nperiods = Int(min(floor(maximum(spt)/period), 128))
@@ -491,20 +487,6 @@ function test_Exwald_Neuron_phasedistribution(N::Int64,
     end
     lines!(ax2, t1, averageRate./Nperiods, linewidth = 4.0, color = :white)
     lines!(ax2, t1, averageRate./Nperiods, linewidth = 2.0, color = :black)
-    #hidespines!(ax0)
-    # xlims!(-2.0, 2.0)
-    # ylims!(-2.0, 2.0)
-
-    # plt = lines!([R0 * sin(2.0 * pi * i / Npts) for i in 0:Npts],
-    #     [R0 * cos(2.0 * pi * i / Npts) for i in 0:Npts])
-
-    #     size=(800, 800), xlims=(-2.0, 2.0), ylims=(-2.0, 2.0),
-    #     bgcolor=:white, gridcolor=:white, showaxis=false, legend = false)
-    # annotate!(0.0, 2.0, ("Exwald Model Neuron ISI Distribution during sinusoidal stimulus",
-    #     14, :center))
-    # annotate!(0.0, 1.875, ("Top subplot is in phase with acceleration",
-    #     11, :center))
-
 
     insetPlotWide = 160.0
     insetPlotHigh = 160.0
@@ -512,7 +494,9 @@ function test_Exwald_Neuron_phasedistribution(N::Int64,
     spi = 1  # subplot index counter
     ax = []
     x0 = zeros(NP)
-    y0 = zeros(NP)    
+    y0 = zeros(NP)   
+    xbig = -99.0   # for computing the x-axis limit, = 2x largest mean of fitted models in cycle
+    fitted_param = zeros(3, NP)   # holds fitted Exwald parameters in columns
     for i in 1:NP
 
         phaseRadians = -phaseAngle[i] * pi / 180.0
@@ -525,9 +509,6 @@ function test_Exwald_Neuron_phasedistribution(N::Int64,
         x0[i] = round(FigRadius - R * cos(phaseRadians) - insetPlotHigh/2.0)       
         y0[i] = round(FigRadius - R * sin(phaseRadians) - insetPlotHigh/2.0)
 
-
-       #setAxisBox(ax[i], x0, y0, insetPlotWide, insetPlotHigh)
-
         T = maximum(I0)
         t = collect(0.0:dt:T)
 
@@ -536,45 +517,35 @@ function test_Exwald_Neuron_phasedistribution(N::Int64,
         (mu_model, lambda_model) = Wald_parameters_from_FirstpassageTimeModel(v, s, barrier)
         tau_model = PoissonTau_from_ThresholdTrigger(v, s, trigger, dt)
 
-       # @infiltrate
-
-        X = Exwaldpdf(mu_model, lambda_model, tau_model, t)
-        W = pdf(InverseGaussian(mu_model, lambda_model), t)
-        P = exp.(-t ./ tau_model) ./ tau_model
-
-
-        # y tick label visible at phase 0, x label visible at phase 180
-        # if i==3
-        #     ytickfontcolor = :black
-        # else 
-        #     ytickfontcolor = :white
-        # end 
-
-
-        # ytickfontcolor = :white
-        # if i == 7
-        #     xtickfontcolor = :black
-        # else
-        #     xtickfontcolor = :white
-        # end
+        # X = Exwaldpdf(mu_model, lambda_model, tau_model, t)
+        # W = pdf(InverseGaussian(mu_model, lambda_model), t)
+        # P = exp.(-t ./ tau_model) ./ tau_model
 
         lw = 1.0
         spi = spi + 1
         H = hist!(I0, bins=128, normalization=:pdf)
 
-        lines!(t, X, color = :salmon1)
+        # fit Exwald Model
+        (maxf, fitted_param[:,i], ret) = Fit_Exwald_to_ISI(I0, [mu_model, lambda_model, tau_model])
+
+        thisbig = fitted_param[1,i] + fitted_param[3,i]   # mean = mu + tau
+        if thisbig > xbig
+            xbig = thisbig
+        end
+
+        lines!(ax[i], t,  
+            Exwaldpdf(fitted_param[1,i], fitted_param[2,i], fitted_param[3,i], t), 
+            color = :salmon1, linewidth = 2.0)
+        
+        # set axis limits and remove ticks
+        # display(Fig)
+        # xlims!(ax[i], 0.0, 0.2) 
+        # ax[i].xticks = vec([-1])
+        # ylims!(ax[i], 0.0, ymax)
+        # ax[i].yticks = vec([-1])
+        
+        #text!()
           
-        #     inset=inset, subplot=i + 1,
-        #     linewidth=0.1, framestyle=:box,
-        #     xticks=[0.02], xtickfontcolor=xtickfontcolor, xtickdirection=:out,
-        #     yticks=[250.0], ytickfontcolor=ytickfontcolor, ytickdirection=:out)
-
-        # plot!(t, W, subplot=i + 1)
-        # plot!(t, P, subplot=i + 1)
-        # plot!(t, X, subplot=i + 1, linewidth=2.0, color=:darkblue, legend = false, 
-        #     xlims=(0.0, 0.04), ylims=(0.0, 400.0))
-
-
     end # phase angles
 
  
@@ -588,18 +559,36 @@ function test_Exwald_Neuron_phasedistribution(N::Int64,
         ymax = max(ymax, ylims(ax[i])[2])
     end
 
-
+    xbig = 2.0*round(10.0*xbig)/10.0
+    # if xbig<.1
+    #     xbig = 2.0*round(100.0*xbig)/100.0
+    # end
+    # if xbig < .01  # don't expect this to happen. 
+    #     xbig = .01
+    # end
     for i in 1:NP
-        xlims!(ax[i], 0.0, 0.2) #xmax)
+        xlims!(ax[i], 0.0, xbig) #xmax)
         ax[i].xticks = vec([-1])
         ylims!(ax[i], 0.0, ymax)
         ax[i].yticks = vec([-1])
     end
-    #ax[1].xticks = vec([.2])
 
+    # show fitted parameters
+    h0 = 0.8
+    dh = .1
+    for i = 1:NP 
+        text!(ax[i], xbig/2.0, h0*ymax, text = @sprintf "μ = %.4f" fitted_param[1,i])
+        text!(ax[i], xbig/2.0, (h0-dh)*ymax, text = @sprintf "λ = %.4f" fitted_param[2,i])
+        text!(ax[i], xbig/2.0, (h0-2.0*dh)*ymax, text = @sprintf "τ = %.4f" fitted_param[3,i])
+    end
+
+    #@infiltrate
     # plots are complete
-    lines!(ax[1], [0.125, 0.175], 0.2*ymax*[1.0, 1.0], color = :black, linewidth = 2)
-    text!(ax[1], .15, .25*ymax, text = "50ms", align = (:center,:center))
+    scalebarx = xlims(ax[1])[2]*[5/8, 7/8]  # scalebar endpoints
+    scalebarlen = round(diff(scalebarx)[]*1000.)
+    lines!(ax[1], scalebarx, 0.2*ymax*[1.0, 1.0], color = :black, linewidth = 2)
+
+    text!(ax[1], mean(scalebarx), .25*ymax, text = (@sprintf "%0.0fms" scalebarlen), align = (:center,:center))
 
     # plots are complete, now move them into position
     for i in 1:NP
@@ -610,50 +599,12 @@ function test_Exwald_Neuron_phasedistribution(N::Int64,
                     ax1_width, ax1_height)
     setAxisBox(ax2, FigRadius - ax1_width/2.0, FigRadius - 1.1*ax1_height,
                     ax1_width, ax1_height)
-    #@infiltrate
-
-    # # plot cycle 2
-    # spi = spi + 1
-    # wavelength = 1.0 / F
-    # (t2, r2) = GLR(spt[findall(spt .< 3.0 * wavelength)], [0.1], dt)# GLR over 3 cycles
-    # i2 = Int(round(wavelength / dt)):Int(round(2.0 * wavelength / dt)) # index 2nd cycle
-    # r2 = r2[i2]            # extract 2nd cycle
-    # t2 = (1:length(r2)) * dt
-
-    # spt2 = spt[findall((spt .>= wavelength) .* (spt .< 2 * wavelength))] .- wavelength
-
-
-
-    # centerPlot = plot!(t2, r2, color=:green, linewidth=2.0,
-    #     inset=bbox(0.0175, -0.025, 0.4, 0.1, :center, :center),
-    #     framestyle=:box, xticks=[0.0, 1.0], xlims=(0.0, 1.0),
-    #     ylims=(0.0, 100.0), yticks=[50.0], ytickfontcolor=:white,
-    #     subplot=spi)
-
-
-    # splot!(spt2, 20.0, spi)
-
-    # #@infiltrate
-    # plot!(t2, v .+ [30.0 * stimulus(t) for t in t2], subplot=spi,
-    #     linewidth=2.0, color=:pink)
-
-    # annotate!(0.65, 90.0, ("acceleration", 10, :pink))
-    # annotate!(0.25, 60.0, ("GLR", 10, :green))
-    # # lw = 2.5
-    # # plot!(t, W, linewidth=lw, size=PLOT_SIZE,
-    # #     label=@sprintf "Wald (%.5f, %.5f)" mu_p lambda_model)
-    # # plot!(t, P, linewidth=lw, label=@sprintf "Exponential (%.5f)" tau_model)
-    # # plot!(t, X, linewidth=lw * 1.5, label=@sprintf "Exwald (%.5f, %.5f, %.5f)" mu_p lambda_model tau_model)
-    # # ylims!(0.0, max(maximum(X), maximum(W)) * 1.25)
-    # # xlims!(0.0, T)
-    # # ylims!(0.0, 2.0*maximum(X))
-    # # display(title!("Exwald Neuron Model ISI at phase angle $phaseAngle"))
 
     display(Fig)
 
-    # # png("nameThisFigure")
+    save("Exwald_Neuron_PhaseISI.png", Fig)
 
-    # spt
+   Fig
 
 end
 
@@ -679,7 +630,7 @@ function test_fit_Exwald_neuron_stationary(N::Int64, mu::Float64, lambda::Float6
 
 end
 
-
+#= 
 # Extract ISI distribution for Exwald model neuron at specified phases of sinusoidal stimulus
 # fit Exwald models to ISI data
 # Plot estimated Exwald parameters vs instantaneous model parameters at fitAngles
@@ -916,3 +867,4 @@ function test_fit_Exwald_Neuron_phasedistribution(N::Int64,
     (mu_hat, lambda_hat, tau_hat, spt)
 
 end
+ =#

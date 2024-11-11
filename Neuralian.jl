@@ -8,7 +8,7 @@
 #   delete!(ax.scene, handle)
 
 using Distributions, GLMakie, ImageFiltering, Sound, Printf,
-    MLStyle, SpecialFunctions, NLopt, Random, MAT
+    MLStyle, SpecialFunctions, NLopt, Random, MAT, BasicInterpolators
 
 DEFAULT_SIMULATION_DT = 1.0e-5
 PLOT_SIZE = (800, 600)
@@ -758,4 +758,105 @@ function setAxisBox(ax::Axis, x0::Float64, x1::Float64, y0::Float64, y1::Float64
 
 end
 
+# return CV of Exwald model neuron
+function CV_fromExwaldModel(mu::Float64, lambda::Float64, tau::Float64)
 
+
+    waldVariance = mu^3/lambda 
+    expVariance =tau^2
+
+    exwaldVariance = expVariance + waldVariance
+    exwaldMean = mu + tau
+
+    CV = sqrt(exwaldVariance)/exwaldMean
+
+end
+
+
+# CV* of Exwald model test_fit_Exwald_neuron_stationary
+function CVStar_fromExwaldModel(mu::Float64, lambda::Float64, tau::Float64)
+
+    # Goldberg, Smith and Fernandez 1984 TABLE 1
+    # nb This table uses milliseconds but (our) model convention is seconds
+    tbar_tab = vec([5.0   5.5  6.0   6.5   7.0   7.5   12.5  17.5  22.5  27.5 32.5  37.5 42.5  47.5  52.5])
+    a_tab =    vec([0.36  0.4  0.46  0.53  0.55  0.56  0.84  1.15  1.49  1.66  1.68  1.8  1.82  1.88  1.93])
+    b_tab =    vec([0.63  0.66  0.73  0.79  0.8  0.81  0.97  1.02  1.04  1.01  0.96  0.93  0.91  0.9  0.89])
+
+    s2ms = 1000.0
+
+    # mean interval length for this neuron
+    tbar = s2ms*(mu + tau)
+
+    # CV for this neuron
+    cv =  CV_fromExwaldModel(mu, lambda, tau)
+
+    # interpolators (using BasicInterpolators.jl)
+    if (tbar<tbar_tab[1] || tbar>tbar_tab[end])  # model is out of bounds, use linear extrapolation
+        a_interpolate = LinearInterpolator(tbar_tab, a_tab, NoBoundaries())
+        b_interpolate = LinearInterpolator(tbar_tab, b_tab, NoBoundaries())
+    else
+        a_interpolate = CubicSplineInterpolator(tbar_tab, a_tab)
+        b_interpolate = CubicSplineInterpolator(tbar_tab, b_tab)
+    end
+
+    # interpolated coefficients 
+    a = a_interpolate(tbar)
+    b = b_interpolate(tbar)
+
+    cvStar = (cv/a)^(1.0/b)
+
+end
+
+function Exwald_fromCV(CV::Float64)
+
+    # Slope and intercept of PC1 in log τ-λ axes
+    # nb time in milliseconds
+    log_tau_0 = 0.0                     # log tau = 0, ie "y-axis" on log-log plot
+    log_lambda_0 = 3.2031               # intercept, lambda @ log tau = 0 
+    d_loglambda_logtau = -0.60277   # slope in log-log axes
+    mu_0 = 12.191
+
+    # pick two initial points at extremes of the distribution on PC1
+    # and evaluate CV at these points
+    log_tau_a = -2.0
+    log_lambda_a = log_lambda_0 + (log_tau_a - log_tau_0)*d_loglambda_logtau
+    CV_a = CV_fromExwaldModel(mu_0, 10.0^log_lambda_a, 10.0^log_tau_a)   
+
+    log_tau_b = 2.0
+    log_lambda_b = log_lambda_0 + (log_tau_b - log_tau_0)*d_loglambda_logtau
+    CV_b = CV_fromExwaldModel(mu_0, 10.0^log_lambda_b, 10.0^log_tau_b)
+
+    # bisection search to find point on PC1 with the specified CV
+    # nb by construction CV_b > CV_a
+    while abs(CV_a-CV_b) > .001
+
+
+        log_tau_c = (log_tau_a + log_tau_b)/2.0
+        log_lambda_c = (log_lambda_b + log_lambda_a)/2.0
+
+        CV_c = CV_fromExwaldModel(mu_0, 10.0^log_lambda_c, 10.0^log_tau_c)
+
+        if CV_c > CV     # CV must lie between point a and c, replace b with c
+            log_tau_b = log_tau_c 
+            log_lambda_b = log_lambda_c 
+            CV_b = CV_c
+        else             # CV must lie between point c and b, replace a with c
+            log_tau_a = log_tau_c 
+            log_lambda_a = log_lambda_c 
+            CV_a = CV_c
+        end
+
+    end
+
+    # convert to seconds for return
+    ms2s = 0.001
+    log_lambda = (log_lambda_a + log_lambda_b)/2.0
+    log_tau    = (log_tau_a + log_tau_b)/2.0
+    return (ms2s*mu_0, ms2s*10.0^log_lambda, ms2s*10.0^log_tau)
+
+end
+
+function Exwald_fromCVStar(CVStar::Float64, tbar::Float64)
+
+
+end
