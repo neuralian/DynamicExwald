@@ -304,7 +304,7 @@ function test_Exwald_Neuron_spontaneous(N::Int64,
     Exwald_param::Tuple{Float64,Float64,Float64}, dt::Float64=DEFAULT_SIMULATION_DT)
 
     (mu, lambda, tau) = Exwald_param
-    spt = Exwald_Neuron(N, (mu, lambda, tau), t -> 0.0)
+    spt = Exwald_Neuron_Nspikes(N, (mu, lambda, tau), t -> 0.0)
 
 
     F = Figure()
@@ -361,7 +361,7 @@ function test_Exwald_Neuron_sin(N::Int64,
     stimulus(t) = A * sin(2 * π * F * t)
 
     # simulate Exwald neuron
-    spt = Exwald_Neuron(N, (mu, lambda, tau), stimulus)
+    spt = Exwald_Neuron_Nspikes(N, (mu, lambda, tau), stimulus)
 
    # Gaussian rate estimate
    gdt = 1.0e-3                      # sample interval for GLR estimate
@@ -409,6 +409,11 @@ end
 # Plot ISI distribution for Exwald neuron at specified phases of sinusoidal stimulus
 # overlay the model-predicted Exwald for each phase
 #   0 <= phase <= 360
+# N = number of spikes 
+# Exwald_param = (mu, lambda, tau)
+# Stim_param = (amplitude, frequency /Schwarz)
+# Example call:
+#  test_Exwald_Neuron_phasedistribution(500000, xwp, (.25, 1.0), vec([45.0*i for i in 0:7]))
 function test_Exwald_Neuron_phasedistribution(N::Int64,
     Exwald_param::Tuple{Float64,Float64,Float64},
     Stim_param::Tuple{Float64,Float64},
@@ -425,7 +430,7 @@ function test_Exwald_Neuron_phasedistribution(N::Int64,
     stimulus(t) = A * sin(2 * π * F * t)
 
     # simulate Exwald neuron
-    spt = Exwald_Neuron(N, (mu, lambda, tau), stimulus)
+    spt = Exwald_Neuron_Nspikes(N, (mu, lambda, tau), stimulus)
 
     # rate estimate
     dt4glr = 0.01
@@ -559,7 +564,7 @@ function test_Exwald_Neuron_phasedistribution(N::Int64,
         ymax = max(ymax, ylims(ax[i])[2])
     end
 
-    xbig = 2.0*round(10.0*xbig)/10.0
+    xbig = 3.0*round(100.0*xbig)/100.0
     # if xbig<.1
     #     xbig = 2.0*round(100.0*xbig)/100.0
     # end
@@ -609,13 +614,99 @@ function test_Exwald_Neuron_phasedistribution(N::Int64,
 end
 
 
+function show_Exwald_Neuron_sineresponse( Exwald_param::Tuple{Float64,Float64,Float64},
+    Stim_param::Tuple{Float64,Float64}, Nperiods::Int = 64,
+    sd::Float64 = -1.0, 
+    dt::Float64 = -1.0)
+
+
+    # extract parameters
+    (mu, lambda, tau) = Exwald_param
+    (A, F) = Stim_param
+
+    # default GLR filter bandwidth 10% of period
+    if sd < 0.0
+        sd = 0.025/F
+    end
+
+    # default sampling interval smalller of .1 filter width or .1 tau
+    if dt < 0.0
+        dt = 0.1
+        while dt > min(sd, tau)
+            dt = 0.1*dt
+        end
+        dt = 1.0/Int(round(1.0/dt))   # fix numerical error in divide-by-10
+    end
+
+
+    (v0, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda)   # Drift speed, noise s.d. & barrier height for Wald component
+    trigger = TriggerThreshold_from_PoissonTau(v0, s, tau, dt)            # threshold for Poisson component using same noise
+
+    # sinusoidal stimulus
+    stimulus(t) = A * sin(2 * π * F * t)
+
+    Period = 1.0/F
+
+    # simulate Exwald neuron for 131 cycles (1st 2 & last 1 will be discarded)
+    spt = Exwald_Neuron(Float64(Nperiods+3)*Period, (mu, lambda, tau), stimulus)
+
+    # rate estimate
+    #dt4glr = 0.01
+    (tx, glrate) = GLR(spt, sd, dt);
+
+
+
+    R0 = 1.0
+
+    Fig = Figure(size = (1200, 600))
+
+    # ax0 allows text to be placed anywhere on the figure
+    ax1 = Axis(Fig[1,1])
+    ax2 = Axis(Fig[2,1])
+
+
+    period = 1.0/F
+    t1 = collect(0.0:dt:period)
+    lines!(ax1, t1, [stimulus(t) for t in t1], color = :black, linewidth = 1.0)   # plot 1 cycle of stimulus
+    display(Fig)
+    splot!(ax1, spt[minimum(findall(spt.>2.0*period)):maximum(findall(spt.<3.0*period))] .- 2.0*period,
+          ylims(ax1)[2]/4.0, 1.0, :navyblue)   
+
+
+    ns = Int(round(period/dt))  # number of glr samples in period
+    averageRate = zeros(ns+1)
+
+    for i in 2 .+ (1:Nperiods)
+        averageRate = averageRate + glrate[((i-1)*ns).+(0:ns)]
+      #  if i <= 130 # display maximum of 128 rate samples 
+            lines!(ax2, t1, glrate[((i-1)*ns).+(0:ns)], linewidth = 0.5)
+       # end
+    end
+
+    lines!(ax2, t1, averageRate./Nperiods, linewidth = 4.0, color = :white)
+    lines!(ax2, t1, averageRate./Nperiods, linewidth = 2.0, color = :black)
+
+    (minf, pest, ret) = Fit_Sinewave_to_Spiketrain(spt, F, sd, dt)
+
+    lines!(ax2, t1, sinewave(pest,F,t1), color = :white, linewidth = 4.0)
+    lines!(ax2, t1, sinewave(pest,F,t1), color = :red, linewidth = 2)
+ 
+    xlims!(ax1, [0.0, period])
+    xlims!(ax2, [0.0, period])   
+    display(Fig)
+
+   (minf, pest)
+
+end
+
+
 # test fit stationary Exwald distribution to spontaneous Exwald neuron model
 # N = sample size
 function test_fit_Exwald_neuron_stationary(N::Int64, mu::Float64, lambda::Float64, tau::Base.Float64)
 
 
     # spontaneous interspike intervals 
-    ISI =  diff(vcat([0.0], Exwald_Neuron(N, (mu, lambda, tau), t->0.0)))
+    ISI =  diff(vcat([0.0], Exwald_Neuron_Nspikes(N, (mu, lambda, tau), t->0.0)))
 
     (maxf, p, ret) = Fit_Exwald_to_ISI(ISI, [mu, lambda, tau],  [0.1, 0.1, 0.1])
 

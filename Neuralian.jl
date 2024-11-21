@@ -8,7 +8,8 @@
 #   delete!(ax.scene, handle)
 
 using Distributions, GLMakie, ImageFiltering, Sound, Printf,
-    MLStyle, SpecialFunctions, NLopt, Random, MAT, BasicInterpolators
+    MLStyle, SpecialFunctions, Random, MAT, BasicInterpolators,
+    DSP
 
 DEFAULT_SIMULATION_DT = 1.0e-5
 PLOT_SIZE = (800, 600)
@@ -38,7 +39,7 @@ end
 #   spiketimes, sd of Gaussian filter, dt = sampling interval, T = end time
 # MGP July 2024
 # spiketime in seconds
-# sd of Gaussian kernal for each spike (if length(sd)==1 then same kernel for all spikes)
+# sd of Gaussian kernal for each spike (ifP length(sd)==1 then same kernel for all spikes)
 # dt = sample interval in seconds
 # pad = pad the start and end of the spike train with mirror image of spikes in first and last pad seconds 
 #       (kluge to prevent edge effects. the padded ends are removed before return) (default no pads).
@@ -79,6 +80,7 @@ function GLR(spiketime::Vector{Float64}, sd::Vector{Float64}, dt::Float64, pad::
         k = Int(round(spiketime[i] / dt)) # ith spike occurs at this sample point
         n = Int(round(4.0 * sd[i] / dt))  # number of sample points within 4 sd each side of spike
         kernel = pdf(Normal(spiketime[i], sd[i]), k * dt .+ (-n:n) * dt)
+        kernel = kernel/sum(kernel*dt)  # normalize (each spike contributes power 1)
         for j in -n:n  # go 4 sd each side
             if (k + j) >= 1 && (k + j) <= N    # in bounds 
                 r[k+j] += kernel[n+j+1]
@@ -95,6 +97,11 @@ function GLR(spiketime::Vector{Float64}, sd::Vector{Float64}, dt::Float64, pad::
     return (t[padN.+(1:sigN)].-t0, r[padN.+(1:sigN)])
 
 
+end
+
+# utility alias for GLR (because usually length(sd)==1)
+function GLR(spiketime::Vector{Float64}, sd::Float64, dt::Float64, pad::Float64=0.0, T::Float64=maximum(spiketime))
+    GLR(spiketime, [sd], dt, pad, T)
 end
 
 # binary Float64 (1.0 or 0.0) vector from spike times 
@@ -333,6 +340,45 @@ function Exwald_simulate(interval::Vector{Float64},
     return interval
 end
 
+# simulate dynamic exwald up to time T
+# spiketime vector must be large enough to hold the spike train
+# if not this function will crash
+function Exwald_simulate(spiketime::Vector{Float64}, T::Float64, 
+    v::Function, s::Float64, barrier::Float64, trigger::Float64, dt::Float64=DEFAULT_SIMULATION_DT)
+
+
+    x = 0.0     # drift-diffusion integral 
+    t0 = 0.0    # ith interval start time
+    t = dt    # current time
+    i = 1       # interval counter
+
+    #@infiltrate
+
+    spiketime .= 0.0
+
+    while t <= T  # generate spikes until time T
+
+        while x < barrier                                   # until reached barrier                                # time update
+            x = x + v(t) * dt + s * randn(1)[] * sqrt(dt)   # integrate noise
+            t = t + dt      
+        end
+        #interval[i] = t - t0                        # record time to barrier (Wald sample)
+        x = x - barrier                             # reset integral
+        #t0 = t                                      # next interval start time
+  
+        while (v(t) + s * randn()[]) < trigger          # tick until noise crosses trigger level
+            t = t + dt
+        end
+        spiketime[i] = t                              
+        #t0 = t                                          # next interval start time
+        i = i + 1                                       # index for next interval
+    end
+
+    # return number of spikes in train
+    # nb the last computed spike time is too big and i has been incremented since then ...
+    return i-2
+end
+
 # Dynamic Exwald simulation specifying N intervals
 function Exwald_simulate(N::Int64,
     v::Function, s::Float64, barrier::Float64, trigger::Float64, dt::Float64=DEFAULT_SIMULATION_DT)
@@ -452,7 +498,7 @@ end
 # spontaneous Exwald parameters Exwald_param = (mu, lambda, tau)
 # stimulus function of time, default f(t)=0.0 (gives spontaneous spike train)
 # Default stimulus = 0.0 (spontaneous activity)
-function Exwald_Neuron(N,
+function Exwald_Neuron_Nspikes(N::Int64,
     Exwald_param::Tuple{Float64,Float64,Float64},
     stimulus::Function,
     dt::Float64=DEFAULT_SIMULATION_DT,
@@ -484,6 +530,50 @@ function Exwald_Neuron(N,
     return intervals ? I : cumsum(I)
 
 end
+
+# Simulate dynamnic Exwald for T seconds
+# spontaneous Exwald parameters Exwald_param = (mu, lambda, tau)
+# stimulus function of time, default f(t)=0.0 (gives spontaneous spike train)
+# Default stimulus = 0.0 (spontaneous activity)
+function Exwald_Neuron(T::Float64,
+    Exwald_param::Tuple{Float64,Float64,Float64},
+    stimulus::Function,
+    dt::Float64=DEFAULT_SIMULATION_DT)  
+
+
+   # allocate vector for sample of size N 
+
+    dt = DEFAULT_SIMULATION_DT  # just to be clear
+
+    # extract Exwald parameters
+    (mu, lambda, tau) = Exwald_param
+
+
+    # First passage time model parameters for spontaneous Wald component 
+    (v0, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda)
+
+    # trigger threshold for spontaneous (mean==tau) Exponwential samples  with N(v0,s) noise
+    trigger = TriggerThreshold_from_PoissonTau(v0, s, tau, dt)
+
+    # drift rate  = spontaneous + stimulus
+    q(t) = v0 + stimulus(t)
+
+    # allocate array for spike train, 2x longer than expected length
+    Expected_Nspikes = Int(round( T/(mu + tau))) # average number of spikes
+    spiketime = zeros(2*Expected_Nspikes)
+
+
+    #@infiltrate
+
+    # Exwald samples by simulating physical model of FPT + Poisson process in series
+    nSpikes = Exwald_simulate(spiketime, T, q, s, barrier, trigger, dt)
+
+    # spike train is cumulative sum of intervals
+    return spiketime[1:nSpikes]
+
+end
+
+
 
 # return vector of interval lengths in spike train at specified phase (0-360)
 #   relative to sin stimulus with frequency freq. 
@@ -655,92 +745,7 @@ function intervalPhase_independent(spiketime::Vector{Float64}, phase::Float64, f
 
 end
 
-# fit Exwald parameters to vector of interspike intervals
-#   using maximum likelihood or minimum KL-divergence (Paulin, Pullar and Hoffman, 2024)
-# uses NLopt
-# returns (mu, lambda, tau)  (in units matching the input data, 
-#                             e.g. seconds if intervals are specified in seconds )
-function Fit_Exwald_to_ISI(ISI::Vector{Float64}, Pinit::Vector{Float64})
 
-
-    # likelihood function
-    grad = zeros(3)
-    LHD = (param, grad) -> sum(log.(Exwaldpdf(param[1], param[2], param[3], ISI))) - (param[1]^2 + param[3]^2)
-
-    #@infiltrate
-
-    optStruc = Opt(:LN_PRAXIS, 3)   # set up 3-parameter NLopt optimization problem
-
-    optStruc.max_objective = LHD       # objective is to maximize likelihood
-
-    optStruc.lower_bounds = [0.0, 0.0, 0.0]   # constrain all parameters > 0
-    #optStruc.upper_bounds = [1.0, 25.0,5.0]
-
-    #optStruc.xtol_rel = 1e-12
-    optStruc.xtol_rel = 1.0e-16
-
-    Grad = zeros(3)  # dummy argument (uisng gradient free algorithm)
-    (maxf, pest, ret) = optimize(optStruc, Pinit)
-
-
-end
-
-# fit closest to spontaneous
-function Fit_Exwald_to_ISI(ISI::Vector{Float64}, spont::Vector{Float64}, Pinit::Vector{Float64})
-
-
-    # likelihood function
-    grad = zeros(3)
-    #w = [0.0, 100.0, .0]
-    LHD = (param, grad) -> sum(log.(Exwaldpdf(param[1], param[2], param[3], ISI))) #- sum((w.*abs.(param-spont)./spont))
-
-    #@infiltrate
-
-    optStruc = Opt(:LN_PRAXIS, 3)   # set up 3-parameter NLopt optimization problem
-
-    optStruc.max_objective = LHD       # objective is to maximize likelihood
-
-    optStruc.lower_bounds = [0.0, 0.0, 0.0]   # constrain all parameters > 0
-    #optStruc.upper_bounds = [1.0, 25.0,5.0]
-
-    #optStruc.xtol_rel = 1e-12
-    optStruc.xtol_rel = 1.0e-16
-
-    Grad = zeros(3)  # dummy argument (uisng gradient free algorithm)
-    (maxf, pest, ret) = optimize(optStruc, Pinit)
-
-
-end
-
-function Fit_scaled_Exwald_to_ISI(ISI::Vector{Float64}, Pinit::Vector{Float64}, s::Float64)
-
-    # scaling
-    Pinit[3] = Pinit[3] / s
-
-    # likelihood function
-    grad = zeros(3)
-    LHD = (param, grad) -> sum(log.(scaled_Exwaldpdf(param[1], param[2], param[3], ISI, s)))
-
-    #@infiltrate
-
-    optStruc = Opt(:LN_PRAXIS, 3)   # set up 3-parameter NLopt optimization problem
-
-    optStruc.max_objective = LHD       # objective is to maximize likelihood
-
-    optStruc.lower_bounds = [0.0, 0.0, 0.0]   # constrain all parameters > 0
-    #optStruc.upper_bounds = [1.0, 25.0,5.0]
-
-    #optStruc.xtol_rel = 1e-12
-    optStruc.xtol_rel = 1.0e-16
-
-    Grad = zeros(3)  # dummy argument (uisng gradient free algorithm)
-    (maxf, pest, ret) = optimize(optStruc, Pinit)
-
-    pest[3] = pest[3] * s
-
-    (maxf, pest, ret)
-
-end
 
 function xlims(ax::Axis)
     ax.xaxis.attributes.limits[]
@@ -857,6 +862,125 @@ function Exwald_fromCV(CV::Float64)
 end
 
 function Exwald_fromCVStar(CVStar::Float64, tbar::Float64)
-
+#TBD
 
 end
+
+# band-limited Gaussian noise by sum-of-sines
+#  f0:  lower band limit in Hz 
+#  f1:  upper band limit in Hz 
+#   s:  Gaussian amplitude s.d.
+#  dt:  sample interval
+#  Nseconds: Signal duration in seconds
+#
+# Returns: (t, blg)  time vector and signal vector
+# 
+function BLG(f0::Float64, f1::Float64, s::Float64, dt::Float64, Nseconds)
+
+    t = collect(0.0:dt:Nseconds)
+
+    bpfilter  = digitalfilter(Bandpass(f0, f1; fs = 1000.), Butterworth(2))
+
+    blg = filt(bpfilter, randn(size(t)))
+    blg = s*blg/std(blg)
+
+    (t, blg)
+
+end
+
+
+# Exwald model Bode gain and phase plots 
+# BLG stimulus, cross-power spectrum
+function exwBode(CV::Float64, Nreps::Int)
+    # NS = 2^20
+    # t = collect(1:NS)
+    # u = randn(size(t))  # white noise
+    
+    # x=filt([1], [1,-0.95], u)
+    
+    Exwald_param = Exwald_fromCV(CV)  # Exwald model with specified CV
+    
+    # BLG stimulus bandwidth (Hz)
+    f0 = 0.01
+    f1 = 100.0
+    #stimulus amplitude  
+    s = 1.0 
+    
+    # stimlus duration
+    T = 200.0
+    
+    # blg stimulus
+    dt = 1.0e-3
+    
+    NN = Int(round(T/dt))
+    Gain = []
+    Phase = []
+    Freqs = []
+    iFreq = []
+    
+    for rep in 1:Nreps
+    (tt, blg) = BLG(f0, f1, s, dt, T)
+    tt = tt[2:end]
+    blg = blg[2:end]   # start at t=dt not t = 0
+    
+    blg_fcn = t -> (t<dt) ? blg[1] : (t<=T) ? blg[Int(round(t/dt))] : blg[end]
+    spiketime = Exwald_Neuron(T, Exwald_param, blg_fcn)
+    
+    # spike rate
+    (t2, x) = GLR(spiketime, 1.0/f1, dt, 0.0, T)
+    
+    # # represent spike train as binary sequence 
+    # x = s2b(spiketimes, dt, T)
+    xspectConfig = MTCrossSpectraConfig{Float64}(2,length(tt), demean = true)
+    X = DSP.allocate_output(xspectConfig)
+    
+    Q = mt_cross_power_spectra!(X, [blg x]', xspectConfig)
+    
+    # scale to Hz
+    Fnyq = 1.0/(2.0*dt)
+    Freqs = freq(Q)*Fnyq
+    iFreq = findall(Freqs.<f1/4.0) # plot over stimulus bandwidth
+    
+    if rep==1
+        Gain = abs.(X[1,2,2:iFreq[end]])
+        Phase = -180.0/π*angle.(X[1,2,2:iFreq[end]])
+    else
+        Gain = Gain .+ abs.(X[1,2,2:iFreq[end]])
+        Phase = Phase .- 180.0/π*angle.(X[1,2,2:iFreq[end]])    
+    end
+    
+    end
+    
+    Gain = Gain/Nreps 
+    Phase = Phase/Nreps 
+    
+    Fig = Figure(size = (800,600))
+    #ax1 = Axis(Fig[1,1:2])
+    ax2 = Axis(Fig[1,1], xscale = log10, yscale = log10, title = @sprintf "CV = %.2f" CV)
+    ax3 = Axis(Fig[2,1], xscale = log10, yticks = [-180, -90.0, 0.0, 90, 180.0])
+    ylims!(ax3, [-120.0, 120.0])
+    
+    
+    Freqs = Freqs[2:iFreq[end]]
+    
+    lines!(ax2, Freqs, Gain)
+    lines!(ax3, Freqs, Phase)
+    
+    ylims!(ax2, [0.1, 10000.])
+    
+    display(Fig)
+    
+    save("Exwald_BLG_Bode.png", Fig)
+    
+    Fig
+end
+    
+# p = [dc, amplitude, phase]
+function sinewave(p, f, t)
+
+    p[1] .+ p[2]*sin.(2.0*π*(f*t .- p[3]))
+
+end
+
+
+        
