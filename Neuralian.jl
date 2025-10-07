@@ -7,9 +7,8 @@
 # Notes 
 #   delete!(ax.scene, handle)
 
-using Distributions, GLMakie, ImageFiltering, Sound, Printf,
-    MLStyle, SpecialFunctions, Random, MAT, BasicInterpolators,
-    DSP
+using Distributions, GLMakie, ImageFiltering, Sound, PortAudio, SampledSignals,
+    Printf, MLStyle, SpecialFunctions, Random, MAT, BasicInterpolators, DSP
 
 DEFAULT_SIMULATION_DT = 1.0e-5
 PLOT_SIZE = (800, 600)
@@ -106,7 +105,7 @@ end
 
 # binary Float64 (1.0 or 0.0) vector from spike times 
 # nb spike times = cumsum(intervals)
-function s2b(spiketime::Vector{Float64}, dt::Float64, T::Float64=ceil(maximum(spiketime)))
+function spiketimes2binary(spiketime::Vector{Float64}, dt::Float64, T::Float64=ceil(maximum(spiketime)))
 
     t = dt:dt:T
     binarySpike = zeros(length(t))
@@ -124,8 +123,12 @@ end
 function listen(spiketime::Vector{Float64})
 
     audioSampleFreq = 8192.0
-    soundsc(s2b(spiketime, 1.0 / audioSampleFreq), audioSampleFreq)     # play audio at 10KHz
+    #soundsc(spiketimes2binary(spiketime, 1.0 / audioSampleFreq), audioSampleFreq)     # play audio at 10KHz
 
+    spikes = spiketimes2binary(spiketime, 1.0 / audioSampleFreq)
+    PortAudioStream(0, 2; samplerate=audioSampleFreq) do stream
+           write(stream, spikes)
+       end
 end
 
 
@@ -563,7 +566,7 @@ function Exwald_Neuron(T::Float64,
     spiketime = zeros(2*Expected_Nspikes)
 
 
-    #@infiltrate
+    # @infiltrate   # << this was active when I was last working on this ... 
 
     # Exwald samples by simulating physical model of FPT + Poisson process in series
     nSpikes = Exwald_simulate(spiketime, T, q, s, barrier, trigger, dt)

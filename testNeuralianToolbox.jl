@@ -1,12 +1,37 @@
 # test Neuralian Toolbox
-using Infiltrator, Colors
 
-# static (spontaneous) simulation
+# test calls:
+
 # test_Wald_sample(.013, 1.0)
 
 # test_Exponential_sample(.001)
 
-# test_Exwald_sample(.013, 0.1, .01)
+# test_Exwald_sample_sum(.013, 0.1, .01)
+
+# test_Exwald_sample_sim(.013, 0.1, .01)
+
+# inhomogenousPoisson_test(200)
+
+# inhomogenousWald_test(1000)
+
+# test_Exwald_Neuron_spontaneous(500, (.013, 0.1, .01))
+
+# test_Exwald_Neuron_sin(500, (.013, 0.1, .01), (.25, 1.0))
+
+# test_Exwald_Neuron_phasedistribution(50000, (.013, 0.1, .01), (.25, 1.0), vec([45.0*i for i in 0:7]))    
+
+# show_Exwald_Neuron_sineresponse((.013, 0.1, .01), (.25, 1.0), 64)
+# show_Exwald_Neuron_sineresponse((.013, 0.1, .01), (.25, 1.0), 64, 0.05, 0.001)
+
+
+
+
+
+include("Neuralian.jl")
+include("NeuralianFit.jl")
+#include("NeuralianPlot.jl")
+
+using Infiltrator, Colors
 
 # Compare first passage time simulation histogram to InverseGaussian from Distributions.jl 
 function test_Wald_sample(mu::Float64, lambda::Float64)
@@ -447,9 +472,9 @@ function test_Exwald_Neuron_phasedistribution(N::Int64,
     ax0 = Axis(Fig[1,NP+1])
     xlims!(ax0, 0., 1.)
     ylims!(ax0, 0., 1.)
-    text!(ax0, .2, .95, fontsize = 24,
-    text = "Exwald Model Neuron ISI distribution during sinusoidal stimulus")
-    text!(ax0, .5, .73, fontsize = 12, align = (:center, :center), text = "Peak Stimulus")
+    text!(ax0, .14, .95, fontsize = 24,
+    text = "Exwald neuron ISI distribution during sinusoidal angular acceleration")
+    text!(ax0, .5, .73, fontsize = 12, align = (:center, :center), text = "Peak acceleration")
     text!(ax0, .05, .92, fontsize = 16, text = "Spontaneous Model Parameters:")
     h0 = .9
     dh = .02
@@ -462,7 +487,7 @@ function test_Exwald_Neuron_phasedistribution(N::Int64,
     text!(ax0, .65, .92, fontsize = 16, text = "Stimulus Parameters:")
     h0 = .9
     dh = .02
-    text!(ax0, .7, h0, fontsize = 16, text = @sprintf "Amplitude = %0.1f (%.4f x drift)" A A/v0)
+    text!(ax0, .7, h0, fontsize = 16, text = @sprintf "Amplitude = %0.2f (%.4f x drift)" A A/v0)
     text!(ax0, .7, h0-dh, fontsize = 16, text = @sprintf "Frequency = %0.1fHz" F)    
     hidedecorations!(ax0)
 
