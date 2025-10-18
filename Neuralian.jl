@@ -7,8 +7,10 @@
 # Notes 
 #   delete!(ax.scene, handle)
 
-using Distributions, GLMakie, ImageFiltering, Sound, PortAudio, SampledSignals,
-    Printf, MLStyle, SpecialFunctions, Random, MAT, BasicInterpolators, DSP
+using Distributions, GLMakie, ImageFiltering, 
+    Sound, PortAudio, SampledSignals, 
+    Printf, MLStyle, SpecialFunctions, Random, MAT, 
+    BasicInterpolators, DSP
 
 DEFAULT_SIMULATION_DT = 1.0e-5
 PLOT_SIZE = (800, 600)
@@ -61,7 +63,7 @@ function GLR(spiketime::Vector{Float64}, sd::Vector{Float64}, dt::Float64, pad::
     if pad > 0.0
         ifront = findall(spiketime[:] .< pad)[end:-1:1]  # indices of front pad spikes in reverse order (mirror) 
         iback = findall(spiketime[:] .> (T - pad))[end:-1:1]
-        #@infiltrate
+        #infiltrate
         spiketime = pad .+ vcat(2.0 * spiketime[1] .- spiketime[ifront[1:end-1]], spiketime, 2.0 * spiketime[iback[1]] .- spiketime[iback[2:end]])
         sd = vcat(sd[ifront[2:end]], sd, sd[iback[2:end]])
     end
@@ -123,19 +125,38 @@ end
 function listen(spiketime::Vector{Float64})
 
     audioSampleFreq = 8192.0
-    #soundsc(spiketimes2binary(spiketime, 1.0 / audioSampleFreq), audioSampleFreq)     # play audio at 10KHz
 
-    spikes = spiketimes2binary(spiketime, 1.0 / audioSampleFreq)
+    spikeAudioData = spiketimes2binary(spiketime, 1.0 / audioSampleFreq)
     PortAudioStream(0, 2; samplerate=audioSampleFreq) do stream
-           write(stream, spikes)
+           write(stream, spikeAudioData)
        end
 end
 
+# write mp3 file spike train audio 
+function spiketimes2mp3(spiketime::Vector{Float64}, fileName::String="spiketrain")
+
+    audioSampleFreq = 8192.0
+ 
+    spikeAudioData = spiketimes2binary(spiketime, 1.0 / audioSampleFreq)
+    wavwrite(spikeAudioData, fileName*".wav", Fs=audioSampleFreq)
+end
+
+# fractional differintegrator by convolving vector f with power law kernel.
+# Because dq is history-dependent (i.e. current state vector includes all previous inputs)
+# it is prohibitively slow to compute dq() by updating at each time step. 
+# This is not fixable in a general way because e.g. for q=-1 (integral) the effect of 
+# past inputs does not decay over time. 
+function dq(f::Vector{Float64}, q, dt::Float64=DEFAULT_SIMULATION_DT)
+
+    N = length(f);
+    T = 1:N;
+    K = cumprod(pushfirst!((T.-1.0.-q)./T, 1.0));
+    dt^-q*conv(K,f)[1:N];
+
+end
 
 
-
-
-# sample of size N from Wald (Inverse Gaussian) Distribution
+    # sample of size N from Wald (Inverse Gaussian) Distribution
 # by simulating first passage times of drift-diffusion to barrier (integrate noise to threshold)
 # interval: vector to hold intervals, whose length is the reqd number of intervals
 # v: drift rate  
@@ -355,6 +376,8 @@ function Exwald_simulate(spiketime::Vector{Float64}, T::Float64,
     t = dt    # current time
     i = 1       # interval counter
 
+    N = length(spiketime)
+
     #@infiltrate
 
     spiketime .= 0.0
@@ -372,14 +395,23 @@ function Exwald_simulate(spiketime::Vector{Float64}, T::Float64,
         while (v(t) + s * randn()[]) < trigger          # tick until noise crosses trigger level
             t = t + dt
         end
+
+
         spiketime[i] = t                              
         #t0 = t                                          # next interval start time
         i = i + 1                                       # index for next interval
+        if i > N
+            N = Int(round(1.1* N))
+            spiketime = resize!(spiketime, N)   # lengthen spiketime vector by 10%
+        end
+
     end
 
+    N = i-2  # actual length of spike train, last spike time is > T and i has been incremented
+    spiketime = resize!(spiketime, N)  # resize to actual length
+
     # return number of spikes in train
-    # nb the last computed spike time is too big and i has been incremented since then ...
-    return i-2
+    return N
 end
 
 # Dynamic Exwald simulation specifying N intervals
@@ -534,7 +566,7 @@ function Exwald_Neuron_Nspikes(N::Int64,
 
 end
 
-# Simulate dynamnic Exwald for T seconds
+# Simulate inhomogenous Exwald for T seconds
 # spontaneous Exwald parameters Exwald_param = (mu, lambda, tau)
 # stimulus function of time, default f(t)=0.0 (gives spontaneous spike train)
 # Default stimulus = 0.0 (spontaneous activity)
@@ -576,7 +608,247 @@ function Exwald_Neuron(T::Float64,
 
 end
 
+# Simulation of torsion pendulum in series with Exwald neuron model, up to time T
+# Steinhausen model gives cupula deflection as a function of head angular acceleration,
+#   parameterized for chinchilla HSC. 
+#   Cupula state x = (p,q) where q = deflection in radians and p=dq/dt, 
+#   default initial state x=(0.0,0.0)
+# Exwald neuron with input proportional to cupula deflection (~work done on gates)
+#   Exwald_param = (mu, lambda, tau)
+#   α(t) is head angular acceleration, default α = t->0.0 gives spontaneous spike train.
+# 
+# MGP Oct 2025
+function Steinhausen_Exwald_Neuron(T::Float64, 
+    Exwald_param::Tuple{Float64,Float64,Float64},
+    α::Function = t->0.0, x::Vector{Float64} = [0.0,0.0],
+    dt::Float64=DEFAULT_SIMULATION_DT)  
 
+    dt = DEFAULT_SIMULATION_DT  # just to be clear
+
+    # extract Exwald parameters
+    (mu, lambda, tau) = Exwald_param
+
+
+    # First passage time model parameters for spontaneous Wald component 
+    (v0, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda)
+
+    # trigger threshold for spontaneous (mean==tau) Exponwential samples  with N(v0,s) noise
+    trigger = TriggerThreshold_from_PoissonTau(v0, s, tau, dt)
+
+    # define a function that returns drift rate of Wald process at time t  
+    # drift q(t) = leak  + cupula_deflection(angular_acceleration(t))
+    spikeGain = 1000.0  # spikes per second per radian deflection
+    q(t) = v0 + spikeGain*cupulaStateUpdate(α(t))[2]  # q is second element of state vector
+
+    # allocate array for spike train, 2x longer than expected length
+    Expected_Nspikes = Int(round( T/(mu + tau))) # average number of spikes
+    spiketime = zeros(2*Expected_Nspikes)
+
+
+    # @infiltrate   # << this was active when I was last working on this ... 
+
+    # Exwald samples by simulating physical model of FPT + Poisson process in series
+    Exwald_simulate(spiketime, T, q, s, barrier, trigger, dt)
+
+
+    return spiketime
+
+end
+
+# function to create a closure function 
+# that updates cupula state x = (p,q) given angular acceleration wdot (radians/s^2)
+# usage: cupulaStateUpdate = create_Steinhausen_state_update(initial_x, dt) # create function & initialize state
+#        x = cupulaStateUpdate(wdot) # update state.
+#        x[2] is cupula deflection in radians
+function create_Steinhausen_state_update(initial_x::Vector{Float64}=[0.0, 0.0], dt::Float64=DEFAULT_SIMULATION_DT)
+   
+    x = copy(initial_x)  # copy initial state (to avoid mutating the input)
+
+     # Steinhausen model: I.q'' + P.q' + K.q = I.wdot, x = (p,q) where p=dq/dt
+    I = 2.0e-12   # coeff of q'', endolymph moment of inertia kg.m^2
+    P = 6.0e-10   # coeff of q', viscous damping N.m.s/rad 
+    K = 1.0e-10   # coeff of q, cupula stiffness N.m/rad
+
+    # Euler equation coeffs from model parameters
+    PoI = P/I
+    KoI = K/I
+
+    function update(wdot::Float64)
+    # update (p,q), Euler method
+    x1 =  x[1] + (wdot - KoI * x[2] - PoI * x[1]) * dt
+    x2 =  x[2] + x[1] * dt
+        
+    x = [x1, x2]  # Return the updated state vector
+    end
+    
+    return update
+end
+
+# function to update cupula state x = (p,q) given angular acceleration wdot (radians/s^2)
+cupulaStateUpdate = create_Steinhausen_state_update()
+
+
+
+# cupula deflection q (radians) given angular acceleration wdot (radians/s)
+# using Steinhausen model 
+# returns cupula state variables (q,p) where p = dq/dt
+# default initial conditions p0=q0=0.0
+function Steinhausen(wdot::Vector{Float64}, dt::Float64=DEFAULT_SIMULATION_DT, x0::Vector{Float64}=[0.0,0.0])
+
+    # Steinhausen model: Iq'' + Pq' + Kq = Awdot, x = (p,q) where p=dq/dt
+    # then dp/dt = A/I*wdot - K/I*q - P/I*p
+
+    # initialize state vector
+    x = zeros((2,length(wdot)))  # rows are (p,q)
+    x[:,1] = x0
+
+    for i in 2:length(wdot)
+    
+        # update (p,q) 
+        x[:,i] = cupulaStateUpdate(wdot[i-1])
+
+    end
+    x
+end
+
+#############################
+#
+#    Fractional order model
+#
+#############################
+
+# Function to compute parameters for Oustaloup approximation to fractional derivative
+function oustaloup_zeros_poles(alpha::Float64, N::Int, wb::Float64, wh::Float64)
+    M = 2 * N + 1
+    poles = Float64[]
+    zeros = Float64[]
+    for k = -N:N
+        # Pole frequency
+        exp_p = (k + N + 0.5 * (1 + alpha)) / M
+        wk = wb * (wh / wb)^exp_p
+        push!(poles, wk)
+        
+        # Zero frequency
+        exp_z = (k + N + 0.5 * (1 - alpha)) / M
+        wkp = wb * (wh / wb)^exp_z
+        push!(zeros, wkp)
+    end
+
+    # Normalization constant K
+    K = (wh / wb)^(-alpha)
+    for i in 1:M
+        K *= poles[i] / zeros[i]
+    end
+    
+    return K, poles, zeros
+end
+
+# Function to compute residues for partial fraction decomposition of Oustaloup model
+# nb xeros for zeros because zeros is a reserved word in Julia
+function oustaloup_residues(K::Float64, poles::Vector{Float64}, xeros::Vector{Float64})
+    M = length(poles)
+    residues = zeros(Float64, M)
+    p_locations = [-p for p in poles]  # Actual pole locations s = -ω_k
+    
+    for m in 1:M
+        pm = p_locations[m]
+        # num(pm) = K * ∏ (pm + z_k for all k)
+        num_pm = K
+        for zk in xeros
+            num_pm *= (pm + zk)
+        end
+        
+        # den'(pm) = ∏_{j≠m} (pm + poles[j])
+        den_prime_pm = 1.0
+        for j in 1:M
+            if j != m
+                den_prime_pm *= (pm + poles[j])
+            end
+        end
+        
+        residues[m] = num_pm / den_prime_pm
+    end
+    
+    return residues, p_locations  # p_locations are the -ω_k, but for dynamics we use +ω_k = -p_locations[m]
+end
+
+# # Closure defining state update function for fractional Steinhausen model y'' + A y' + B Dq y = u(t)
+# # with visco-elastic cupular restoring force modeled by fractional derivative Dq = d^q/dt^q
+# # Using Oustaloup approximation to Dq over specified frequency band.
+# # The augmented state includes auxiliary variables for the Oustaloup approximation.
+# # Initial state is [y0, y'(0), 0, 0, ..., 0] (M zeros for auxiliary states).
+# function make_fractional_Steinhausen_stateUpdate_fcn(
+#     q::Float64, y0::Float64, yp0::Float64; 
+#     dt::Float64=DEFAULT_SIMULATION_DT, f0::Float64=1e-2, f1::Float64=2e1)
+
+#     # Fractional Steinhausen model: I.y'' + P.y' + K.Dq y = I.wdot, 
+#     I = 2.0e-12   # coeff of q'', endolymph moment of inertia kg.m^2
+#     P = 6.0e-11   # coeff of q', viscous damping N.m.s/rad 
+#     G = 1.0e-10    # coeff of q, cupula stiffness N.m/rad 
+
+#     # Update equation coeffs from model parameters
+#     A = P/I
+#     B = G/I
+ 
+#     # convert frequency band from Hz to rad/s
+#     wb = 2.0*pi*f0
+#     wh = 2.0*pi*f1
+
+#     # Approximation of order 2N+1 (so N=2 is 5th order)
+#     N = 2
+    
+#     # Compute Oustaloup parameters
+#     K, poles, xeros = oustaloup_zeros_poles(q, N, wb, wh)
+    
+#     # Compute residues and pole dynamics coefficients (the p_i = ω_k >0 for v' = -p_i v + y)
+#     residues, _ = oustaloup_residues(K, poles, xeros)
+#     p_i = poles  # p_i = ω_k for the dynamics v' = -p_i v + y
+    
+#     M = length(poles)  # ... = 2N+1
+
+#     # Augmented state: u = [y, y', v1, ..., vM]
+#     x = [y0; yp0; zeros(M)]
+#     du = zeros(length(x))
+
+#     # State update function
+#     function update(u::Float64)
+
+#         y =  x[1]
+#         dy = x[2]
+#         vs = @view x[3:end]
+        
+#         # Approximate D^q y ≈ K * y + sum r_i * v_i
+#         approx_dq = K * y
+#         for i in 1:M
+#             approx_dq += residues[i] * vs[i]
+#         end
+        
+#         # "ordinary" state updates
+#         du[1] = dy
+#         du[2] = u - A * dy - B * approx_dq
+        
+        # Auxiliary state updates
+        for i in 1:M
+            du[2 + i] = -p_i[i] * vs[i] + y
+        end
+
+        # Euler integration
+        for i in 1:length(x)
+            x[i] += du[i] * dt
+        end
+
+        return x[1]  # return cupula deflection
+    
+    end
+
+    return update
+end
+    
+#############################
+#
+#    End fractional model
+#
+#############################
 
 # return vector of interval lengths in spike train at specified phase (0-360)
 #   relative to sin stimulus with frequency freq. 
@@ -894,7 +1166,7 @@ end
 
 # Exwald model Bode gain and phase plots 
 # BLG stimulus, cross-power spectrum
-function exwBode(CV::Float64, Nreps::Int)
+function exwaldBodePlots_fromBLG(CV::Float64, Nreps::Int)
     # NS = 2^20
     # t = collect(1:NS)
     # u = randn(size(t))  # white noise
@@ -977,11 +1249,118 @@ function exwBode(CV::Float64, Nreps::Int)
     
     Fig
 end
+
+# Exwald model Bode gain and phase plots
+# sinewave stimuli, vector of frequencies in Hz
+# returns (freq, Gain, Phase) vectors
+function exwaldGainPhase_fromSines(exwald_param::Tuple{Float64,Float64,Float64},
+    freq::Vector{Float64}, amplitude::Float64)
+
+
+    N = 16 # number of stimulus cycles to fit response
+    dt = 1.0e-4   # time step
+    (mu, lambda, tau) = exwald_param
+
     
-# p = [dc, amplitude, phase]
+    Gain = zeros(length(freq))
+    Phase = zeros(length(freq))
+    
+    for i in 1:length(freq)
+
+        period = 1.0/freq[i]
+        Burn = Int(ceil(freq[i]))  # burn-in at least 1 second
+        Ncycles = N + Burn + 1     # number of cycles to simulate (we will drop the last cycle)
+        
+        T = Ncycles*period   # stimulus duration
+
+        # sinewave stimulus
+        stimulus_fcn = t->sinewave([0.0, amplitude, 0.0], freq[i], t)
+
+        # spike train response
+        spiketime = Exwald_Neuron(T, exwald_param, stimulus_fcn, dt)
+        
+
+        # spike rate by Gaussian Local Rate filter
+        (sampleTimes, firingRate) = GLR(spiketime, period/16.0, 0.001, 0.0, T)
+
+        # fit sinewave to rate estimate, pest = (offset, amplitude, phase)
+        (minf, pest, ret) = Fit_Sinewave_to_Spiketrain(spiketime, freq[i], dt)
+ 
+        Gain[i] = pest[2]/amplitude
+        Phase[i] = pest[3]*180.0/π   # radians to degrees
+        println(i/length(freq))
+        
+    end
+
+    (freq, Gain, Phase)
+end
+
+function dynamicExwaldGainPhase_fromSines(exwald_param::Tuple{Float64,Float64,Float64},
+    freq::Vector{Float64}, amplitude::Float64)  
+
+    N = 16 # number of stimulus cycles to fit response
+    dt = 1.0e-4   # time step
+    (mu, lambda, tau) = exwald_param
+
+    
+    Gain = zeros(length(freq))
+    Phase = zeros(length(freq))
+    
+    for i in 1:length(freq)
+
+        period = 1.0/freq[i]
+        Burn = Int(ceil(freq[i]))  # burn-in at least 1 second
+        Ncycles = N + Burn + 1     # number of cycles to simulate (we will drop the last cycle)
+        
+        T = Ncycles*period   # stimulus duration
+
+        # sinewave stimulus
+        stimulus_fcn = t->sinewave([0.0, amplitude, 0.0], freq[i], t)
+
+        # spike train response
+        spiketime = Exwald_Neuron(T, exwald_param, stimulus_fcn, dt)
+        
+
+        # spike rate by Gaussian Local Rate filter
+        (sampleTimes, firingRate) = GLR(spiketime, period/16.0, 0.001, 0.0, T)
+
+        # fit sinewave to rate estimate, pest = (offset, amplitude, phase)
+        (minf, pest, ret) = Fit_Sinewave_to_Spiketrain(spiketime, freq[i], dt)
+ 
+        Gain[i] = pest[2]/amplitude
+        Phase[i] = pest[3]*180.0/π   # radians to degrees
+        println(i/length(freq))
+        
+    end
+
+    (freq, Gain, Phase)
+
+end
+
+function drawBodePlots(freq, Gain, Phase)
+
+    Fig = Figure(size = (800,600))
+    #ax1 = Axis(Fig[1,1:2])
+    ax2 = Axis(Fig[1,1], xscale = log10, yscale = log10)
+    ax3 = Axis(Fig[2,1], xscale = log10, yticks = [-40., -20.0, 0.0, 20., 40.0])
+    ylims!(ax3, [-45.0, 45.0])
+    
+    lines!(ax2, freq, Gain)
+    lines!(ax3, freq, Phase)
+    
+    ylims!(ax2, [0.1, 10.])
+    
+    display(Fig)
+    
+   # save("Exwald_Sinewave_Bode.png", Fig)
+    
+    Fig
+end
+
+
 function sinewave(p, f, t)
 
-    p[1] .+ p[2]*sin.(2.0*π*(f*t .- p[3]))
+    p[1] .+ p[2]*sin.(2.0*π*f*t .- p[3])
 
 end
 

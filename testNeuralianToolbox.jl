@@ -16,12 +16,15 @@
 
 # test_Exwald_Neuron_spontaneous(500, (.013, 0.1, .01))
 
-# test_Exwald_Neuron_sin(500, (.013, 0.1, .01), (.25, 1.0))
+# demo_Exwald_Neuron_sin(500, (.013, 0.1, .01), (.25, 1.0))
 
 # test_Exwald_Neuron_phasedistribution(50000, (.013, 0.1, .01), (.25, 1.0), vec([45.0*i for i in 0:7]))    
 
 # show_Exwald_Neuron_sineresponse((.013, 0.1, .01), (.25, 1.0), 64)
 # show_Exwald_Neuron_sineresponse((.013, 0.1, .01), (.25, 1.0), 64, 0.05, 0.001)
+
+# make Poisson spike train, listen and write to mp3
+# I = zeros(100);Exponential_sample(I, .1);st = cumsum(I); listen(st); spiketimes2mp3(st, "aspiketrain")
 
 
 
@@ -371,9 +374,10 @@ function test_Exwald_Neuron_spontaneous(N::Int64,
 
 end
 
-# test dynamic Exwald with sinusoidal stimulus
+# demo inhomogenous Exwald neuron with sinusoidal stimulus
 # stimulus parameters Stim_param = (A, F), A = amplitude, F = frequency (Hz)
-function test_Exwald_Neuron_sin(N::Int64,
+# NB stimulus amplitude is plotted x10 for visibility
+function demo_Exwald_Neuron_sin(N::Int64,
     Exwald_param::Tuple{Float64,Float64,Float64}, Stim_param::Tuple{Float64,Float64}, dt::Float64=DEFAULT_SIMULATION_DT)
 
     # extract parameters
@@ -399,21 +403,11 @@ function test_Exwald_Neuron_sin(N::Int64,
     timevarying_μ = [Wald_parameters_from_FirstpassageTimeModel(v.+stimulus(tt), s, barrier)[1] for tt in t]
     timevarying_rate = 1.0./(timevarying_μ+timevarying_τ)
 
-    
-
-
-
     Fig = Figure(size=(1200, 400))
     ax = Axis(Fig[1,1])
 
-
-
     # plot spike train
     splot!(ax, spt, 20.)
-
- 
-
-
 
     # plot rate estimate 
     lines!(t, r, linewidth=2.5)
@@ -424,12 +418,74 @@ function test_Exwald_Neuron_sin(N::Int64,
     # plot spontaneous level
     #lines!([t[1], t[end]], v * [1.0, 1.0])
     # plot stimulus
-    lines!(t, [stimulus(x) for x in t], color = :salmon1, linewidth = 2.5)
+    lines!(t, [10.0*stimulus(x) for x in t], color = :salmon1, linewidth = 2.5)
 
     display(Fig)
 
     return spt
 end
+
+
+# demo dynamic Steinhausen-Exwald neuron with sinusoidal stimulus
+# frequency f (Hz), maxAngle = maximum angular displacement (degrees)
+# >>>>>>>NB stimulus amplitude is maximum angular displacement in degrees<<<
+#  because its easier to visualize the movement this way, e.g. wobbles +-10 deg at 1Hz
+function demo_Steinhausen_Exwald_Neuron_sin(T::Float64, 
+    Exwald_param::Tuple{Float64,Float64,Float64}, 
+    f::Float64, maxAngle::Float64, dt::Float64=DEFAULT_SIMULATION_DT)
+
+    # stimulus amplitude, convert from degrees max displacement to radians/s^2 angular acceleration
+    A = maxAngle * (π/180.0)*4.0*π^2*f^2   # convert to radians
+
+    # # extract parameters of Exwald model
+    # (mu, lambda, tau) = Exwald_param
+    # (v, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda)   # Drift speed, noise s.d. & barrier height for Wald component
+    # trigger = TriggerThreshold_from_PoissonTau(v, s, tau, dt)            # threshold for Poisson component using same noise
+
+    # sinusoidal angular acceleration at time t
+    wdot(t) = 4.0*pi^2*f^2*A*sin(2 * π * f * t)
+
+    # simulate Steinhausen-Exwald neuron
+    spt = Steinhausen_Exwald_Neuron(T, Exwald_param, wdot)
+
+   # Gaussian rate estimatede
+   gdt = 1.0e-3                      # sample interval for GLR estimate
+   (tr, r) = GLR(spt, [0.05], gdt)       # rate estimate r at sample times t
+
+    #@infiltrate
+
+    # # # compute expected mean rate (1/mean interval) during stimulus
+    # cupulaModel = create_cupula_state_update()
+    # Gain = 10000.0  # spikes per second per radian deflection
+    # timevarying_τ = [PoissonTau_from_ThresholdTrigger(v.+Gain*cupulaModel(stimulus(tt))[2], s, trigger, DEFAULT_SIMULATION_DT) for tt in tr]
+    # timevarying_μ = [Wald_parameters_from_FirstpassageTimeModel(v.+Gain*cupulaModel(stimulus(tt))[2], s, barrier)[1] for tt in tr]
+    # timevarying_rate = 1.0./(timevarying_μ+timevarying_τ)
+
+    Fig = Figure(size=(1800, 400))
+    ax = Axis(Fig[1,1])
+
+    # plot spike train
+    splot!(ax, spt, 20.)
+
+    # plot rate estimate 
+    lines!(tr, r, linewidth=2.5)
+
+    # # # expected rate
+    # lines!(tr,4.0*timevarying_rate, linewidth = 2.5 )
+
+    # plot angular acceleration stimulus
+    lines!(tr, [wdot(tt) for tt in tr], color = :salmon1, linewidth = 2.5)
+
+     # plot angular velocity stimlus
+    lines!(tr, [-2.0*π*f*A*cos(2.0*π*f*tt) for tt in tr], color = :green, linewidth = 2.5)   
+
+    xlims!(0.0, tr[end])
+    ax.title = "Steinhausen-Exwald Neuron Model "
+    display(Fig)
+
+    return spt
+end
+
 
 # Plot ISI distribution for Exwald neuron at specified phases of sinusoidal stimulus
 # overlay the model-predicted Exwald for each phase
@@ -676,8 +732,8 @@ function show_Exwald_Neuron_sineresponse( Exwald_param::Tuple{Float64,Float64,Fl
     spt = Exwald_Neuron(Float64(Nperiods+3)*Period, (mu, lambda, tau), stimulus)
 
     # rate estimate
-    #dt4glr = 0.01
-    (tx, glrate) = GLR(spt, sd, dt);
+    #dt4glr = 0.1
+    (tx, glrate) = GLR(spt, Period/16.0, dt);
 
 
 
@@ -694,6 +750,7 @@ function show_Exwald_Neuron_sineresponse( Exwald_param::Tuple{Float64,Float64,Fl
     t1 = collect(0.0:dt:period)
     lines!(ax1, t1, [stimulus(t) for t in t1], color = :black, linewidth = 1.0)   # plot 1 cycle of stimulus
     display(Fig)
+    # plot spike train over 2nd cycle
     splot!(ax1, spt[minimum(findall(spt.>2.0*period)):maximum(findall(spt.<3.0*period))] .- 2.0*period,
           ylims(ax1)[2]/4.0, 1.0, :navyblue)   
 
@@ -708,17 +765,24 @@ function show_Exwald_Neuron_sineresponse( Exwald_param::Tuple{Float64,Float64,Fl
        # end
     end
 
+    # plot instantaneous rate from GLR averaged over Nperiods, COLOR = BLACK
     lines!(ax2, t1, averageRate./Nperiods, linewidth = 4.0, color = :white)
     lines!(ax2, t1, averageRate./Nperiods, linewidth = 2.0, color = :black)
 
+    # fit sinewave to rate estimate, pest = (offset, amplitude, phase)
     (minf, pest, ret) = Fit_Sinewave_to_Spiketrain(spt, F, sd, dt)
 
+    # plot fitted sinewave, COLOR = RED
     lines!(ax2, t1, sinewave(pest,F,t1), color = :white, linewidth = 4.0)
     lines!(ax2, t1, sinewave(pest,F,t1), color = :red, linewidth = 2)
- 
+    lines!(ax2, t1, pest[1].+(pest[2]/A).*[stimulus(t) for t in t1], color = :green, linewidth = 2.0)   # plot 1 cycle of stimulus
+
     xlims!(ax1, [0.0, period])
     xlims!(ax2, [0.0, period])   
     display(Fig)
+
+    println(@sprintf("Fitted rate sinewave: offset = %.3f, amplitude = %.3f, phase = %.1f°",
+        pest[1], pest[2], pest[3]*180.0/pi))
 
    (minf, pest)
 
@@ -742,9 +806,10 @@ function test_fit_Exwald_neuron_stationary(N::Int64, mu::Float64, lambda::Float6
     plot!(t, Exwaldpdf(p[1], p[2], p[3], t), linewidth=2)
     display(plot!(t, Exwaldpdf(mu, lambda, tau, t), linewidth=2))
 
-    p
 
 end
+
+
 
 #= 
 # Extract ISI distribution for Exwald model neuron at specified phases of sinusoidal stimulus
