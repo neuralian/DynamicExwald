@@ -156,7 +156,7 @@ function dq(f::Vector{Float64}, q, dt::Float64=DEFAULT_SIMULATION_DT)
 end
 
 
-    # sample of size N from Wald (Inverse Gaussian) Distribution
+# sample of size N from Wald (Inverse Gaussian) Distribution
 # by simulating first passage times of drift-diffusion to barrier (integrate noise to threshold)
 # interval: vector to hold intervals, whose length is the reqd number of intervals
 # v: drift rate  
@@ -203,8 +203,6 @@ function FirstPassageTime_simulate(interval::Vector{Float64},
     end
 end
 
-
-
 # First passage time model parameters (v,s,barrier) from Wald parameters (mu, lambda)
 # One FPT parameter must be specified by name and value. 
 # Name choices are "noiseMean", "noiseSD" and "barrier". 
@@ -236,9 +234,6 @@ function Wald_sample(interval::Vector{Float64}, mu::Float64, lambda::Float64, dt
     FirstPassageTime_simulate(interval, v, s, a, dt)
     return interval
 end
-
-
-
 
 
 #function FirstPassageTime_simulate(interval::Vector{Float64}, v::Float64, s::Float64, a::Float64, dt::Float64=DEFAULT_SIMULATION_DT, T::Float64=1.5*v/a*length(interval))
@@ -608,116 +603,7 @@ function Exwald_Neuron(T::Float64,
 
 end
 
-# Simulation of torsion pendulum in series with Exwald neuron model, up to time T
-# Steinhausen model gives cupula deflection as a function of head angular acceleration,
-#   parameterized for chinchilla HSC. 
-#   Cupula state x = (p,q) where q = deflection in radians and p=dq/dt, 
-#   default initial state x=(0.0,0.0)
-# Exwald neuron with input proportional to cupula deflection (~work done on gates)
-#   Exwald_param = (mu, lambda, tau)
-#   α(t) is head angular acceleration, default α = t->0.0 gives spontaneous spike train.
-# 
-# MGP Oct 2025
-function Steinhausen_Exwald_Neuron(T::Float64, 
-    Exwald_param::Tuple{Float64,Float64,Float64},
-    α::Function = t->0.0, x::Vector{Float64} = [0.0,0.0],
-    dt::Float64=DEFAULT_SIMULATION_DT)  
-
-    dt = DEFAULT_SIMULATION_DT  # just to be clear
-
-    # extract Exwald parameters
-    (mu, lambda, tau) = Exwald_param
-
-
-    # First passage time model parameters for spontaneous Wald component 
-    (v0, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda)
-
-    # trigger threshold for spontaneous (mean==tau) Exponwential samples  with N(v0,s) noise
-    trigger = TriggerThreshold_from_PoissonTau(v0, s, tau, dt)
-
-    # define a function that returns drift rate of Wald process at time t  
-    # drift q(t) = leak  + cupula_deflection(angular_acceleration(t))
-    spikeGain = 1000.0  # spikes per second per radian deflection
-    q(t) = v0 + spikeGain*cupulaStateUpdate(α(t))[2]  # q is second element of state vector
-
-    # allocate array for spike train, 2x longer than expected length
-    Expected_Nspikes = Int(round( T/(mu + tau))) # average number of spikes
-    spiketime = zeros(2*Expected_Nspikes)
-
-
-    # @infiltrate   # << this was active when I was last working on this ... 
-
-    # Exwald samples by simulating physical model of FPT + Poisson process in series
-    Exwald_simulate(spiketime, T, q, s, barrier, trigger, dt)
-
-
-    return spiketime
-
-end
-
-# function to create a closure function 
-# that updates cupula state x = (p,q) given angular acceleration wdot (radians/s^2)
-# usage: cupulaStateUpdate = create_Steinhausen_state_update(initial_x, dt) # create function & initialize state
-#        x = cupulaStateUpdate(wdot) # update state.
-#        x[2] is cupula deflection in radians
-function create_Steinhausen_state_update(initial_x::Vector{Float64}=[0.0, 0.0], dt::Float64=DEFAULT_SIMULATION_DT)
-   
-    x = copy(initial_x)  # copy initial state (to avoid mutating the input)
-
-     # Steinhausen model: I.q'' + P.q' + K.q = I.wdot, x = (p,q) where p=dq/dt
-    I = 2.0e-12   # coeff of q'', endolymph moment of inertia kg.m^2
-    P = 6.0e-10   # coeff of q', viscous damping N.m.s/rad 
-    K = 1.0e-10   # coeff of q, cupula stiffness N.m/rad
-
-    # Euler equation coeffs from model parameters
-    PoI = P/I
-    KoI = K/I
-
-    function update(wdot::Float64)
-    # update (p,q), Euler method
-    x1 =  x[1] + (wdot - KoI * x[2] - PoI * x[1]) * dt
-    x2 =  x[2] + x[1] * dt
-        
-    x = [x1, x2]  # Return the updated state vector
-    end
-    
-    return update
-end
-
-# function to update cupula state x = (p,q) given angular acceleration wdot (radians/s^2)
-cupulaStateUpdate = create_Steinhausen_state_update()
-
-
-
-# cupula deflection q (radians) given angular acceleration wdot (radians/s)
-# using Steinhausen model 
-# returns cupula state variables (q,p) where p = dq/dt
-# default initial conditions p0=q0=0.0
-function Steinhausen(wdot::Vector{Float64}, dt::Float64=DEFAULT_SIMULATION_DT, x0::Vector{Float64}=[0.0,0.0])
-
-    # Steinhausen model: Iq'' + Pq' + Kq = Awdot, x = (p,q) where p=dq/dt
-    # then dp/dt = A/I*wdot - K/I*q - P/I*p
-
-    # initialize state vector
-    x = zeros((2,length(wdot)))  # rows are (p,q)
-    x[:,1] = x0
-
-    for i in 2:length(wdot)
-    
-        # update (p,q) 
-        x[:,i] = cupulaStateUpdate(wdot[i-1])
-
-    end
-    x
-end
-
-#############################
-#
-#    Fractional order model
-#
-#############################
-
-# Function to compute parameters for Oustaloup approximation to fractional derivative
+# Function to compute Oustaloup approximation parameters
 function oustaloup_zeros_poles(alpha::Float64, N::Int, wb::Float64, wh::Float64)
     M = 2 * N + 1
     poles = Float64[]
@@ -739,11 +625,13 @@ function oustaloup_zeros_poles(alpha::Float64, N::Int, wb::Float64, wh::Float64)
     for i in 1:M
         K *= poles[i] / zeros[i]
     end
+
+    K *=wh^alpha
     
     return K, poles, zeros
 end
 
-# Function to compute residues for partial fraction decomposition of Oustaloup model
+# Function to compute residues for partial fraction decomposition
 # nb xeros for zeros because zeros is a reserved word in Julia
 function oustaloup_residues(K::Float64, poles::Vector{Float64}, xeros::Vector{Float64})
     M = length(poles)
@@ -772,64 +660,93 @@ function oustaloup_residues(K::Float64, poles::Vector{Float64}, xeros::Vector{Fl
     return residues, p_locations  # p_locations are the -ω_k, but for dynamics we use +ω_k = -p_locations[m]
 end
 
-# # Closure defining state update function for fractional Steinhausen model y'' + A y' + B Dq y = u(t)
-# # with visco-elastic cupular restoring force modeled by fractional derivative Dq = d^q/dt^q
-# # Using Oustaloup approximation to Dq over specified frequency band.
-# # The augmented state includes auxiliary variables for the Oustaloup approximation.
-# # Initial state is [y0, y'(0), 0, 0, ..., 0] (M zeros for auxiliary states).
-# function make_fractional_Steinhausen_stateUpdate_fcn(
-#     q::Float64, y0::Float64, yp0::Float64; 
-#     dt::Float64=DEFAULT_SIMULATION_DT, f0::Float64=1e-2, f1::Float64=2e1)
+# Create closure to compute state update for fractional Steinhausen model 
+#       y'' + A y' + B Dq y = Dq u(t)
+# with fractional derivative Dq = d^q/dt^q, -1<q<1 (Landolt and Correia, 1980; Magin, 2005).
+#   q = 0.0 gives classical torsion pendulum model
+#   q > 0.0 gives phase advance πq/2 at all frequencies, 
+#           in particular q=1.0 turns velocity sensitivity into acceleration sensitivity.
+# Accurate enough in the specified frequency band (f0, f1) /Hz. Outside that all bets are off.
+# Construct the state update function and initialize state: 
+#       cupula_update = make_fractional_Steinhausen_stateUpdate_fcn(<params>)
+# Use the state update function to update state at ith timestep and return cupula deflection (rad):
+#       cupula_deflection = cupula_update(u_i)
+# Uses Oustaloup approximation to Dq over specified frequency band (f0,f1) in Hz.
+# Default order of approximation N=2 (M=2*N+1 = 5th order linear TF), use N up to 5 for better approx.
+# Augmented state includes auxiliary variables for the approximation.
+# Initial state is [y0, y'(0), 0, 0, ..., 0] (M zeros for auxiliary states).
+# Example usage
+        # q = -0.5  # fractional order
+        # w = 2.0  # frequency of input rad/s
+        # T = 12.0
+        # dt = DEFAULT_SIMULATION_DT
+        # t = 0:dt:T
+        # x = sin.(w .* t)  # input angular velocity (rad/s)
+        # d = zeros(length(t))
 
-#     # Fractional Steinhausen model: I.y'' + P.y' + K.Dq y = I.wdot, 
-#     I = 2.0e-12   # coeff of q'', endolymph moment of inertia kg.m^2
-#     P = 6.0e-11   # coeff of q', viscous damping N.m.s/rad 
-#     G = 1.0e-10    # coeff of q, cupula stiffness N.m/rad 
+        # FSS_update = make_fractional_Steinhausen_stateUpdate_fcn(q, 0., 0.)
 
-#     # Update equation coeffs from model parameters
-#     A = P/I
-#     B = G/I
+        # for i in 1:length(t)
+        #     d[i] = FSS_update(x[i])
+        # end
+##
+function make_fractional_Steinhausen_stateUpdate_fcn(
+    q::Float64, y0::Float64, yp0::Float64; 
+    dt::Float64=DEFAULT_SIMULATION_DT, f0::Float64=1e-2, f1::Float64=2e1)
+
+    # Fractional Steinhausen model: I.y'' + P.y' + K.Dq y = I.wdot, 
+    I = 2.0e-12   # coeff of q'', endolymph moment of inertia kg.m^2
+    P = 6.0e-11   # coeff of q', viscous damping N.m.s/rad 
+    G = 1.0e-10    # coeff of q, cupula stiffness N.m/rad 
+
+    # Update equation coeffs from model parameters
+    A = P/I
+    B = G/I
  
-#     # convert frequency band from Hz to rad/s
-#     wb = 2.0*pi*f0
-#     wh = 2.0*pi*f1
+    # convert frequency band from Hz to rad/s
+    wb = 2.0*pi*f0
+    wh = 2.0*pi*f1
 
-#     # Approximation of order 2N+1 (so N=2 is 5th order)
-#     N = 2
+    # Approximation of order 2N+1 (so N=2 is 5th order)
+    N = 5
     
-#     # Compute Oustaloup parameters
-#     K, poles, xeros = oustaloup_zeros_poles(q, N, wb, wh)
+    # Compute Oustaloup parameters
+    K, poles, xeros = oustaloup_zeros_poles(q, N, wb, wh)
     
-#     # Compute residues and pole dynamics coefficients (the p_i = ω_k >0 for v' = -p_i v + y)
-#     residues, _ = oustaloup_residues(K, poles, xeros)
-#     p_i = poles  # p_i = ω_k for the dynamics v' = -p_i v + y
+    # Compute residues and pole dynamics coefficients (the p_i = ω_k >0 for v' = -p_i v + y)
+    residues, _ = oustaloup_residues(K, poles, xeros)
+    p_i = poles  # p_i = ω_k for the dynamics v' = -p_i v + y
     
-#     M = length(poles)  # ... = 2N+1
+    M = length(poles)  # ... = 2N+1
 
-#     # Augmented state: u = [y, y', v1, ..., vM]
-#     x = [y0; yp0; zeros(M)]
-#     du = zeros(length(x))
+    # Augmented state: u = [y, y', v1, ..., vM]
+    x = [y0; yp0; zeros(M)]
+    du = zeros(length(x))
 
-#     # State update function
-#     function update(u::Float64)
+    # State update function
+    function update(u::Float64)
 
-#         y =  x[1]
-#         dy = x[2]
-#         vs = @view x[3:end]
+        y =  x[1]
+        dy = x[2]
+        vs = @view x[3:end]
         
-#         # Approximate D^q y ≈ K * y + sum r_i * v_i
-#         approx_dq = K * y
-#         for i in 1:M
-#             approx_dq += residues[i] * vs[i]
-#         end
+        # Approximate D^q u 
+        if (q==0.0) 
+            approx_dq = u
+        else
+            approx_dq = K * u
+            for i in 1:M
+                approx_dq += residues[i] * vs[i]
+            end
+        end
         
-#         # "ordinary" state updates
-#         du[1] = dy
-#         du[2] = u - A * dy - B * approx_dq
+        # "ordinary" state updates
+        du[1] = dy
+        du[2] = approx_dq - A * dy - B * y
         
         # Auxiliary state updates
         for i in 1:M
-            du[2 + i] = -p_i[i] * vs[i] + y
+            du[2 + i] = -p_i[i] * vs[i] + u
         end
 
         # Euler integration
@@ -841,15 +758,92 @@ end
     
     end
 
-    return update
+    # return closure
+    return update 
 end
     
-#############################
-#
-#    End fractional model
-#
-#############################
+# Spike times of Exwald neuron with input proportional to cupula deflection (δ)
+# computed by fractional torsion pendulum model, δ'' + Aδ' + Bδ = Dq wdot(t)
+#   EXW_param = (μ, λ, τ)
+#   q=0 gives classical torsion pendulum, 0.0<q<1 gives frequency-independent phase advance πq/2
+#   Head acceleration wdot is a function of t on simulation interval (0,T)
+#   e.g. t->sinewave((0.0, 1.0, 0.0), 2.0*pi, t) # 1Hz unit amplitude sine wave
+# Returns vector of spike times
+function fractionalSteinhausenExwald_Neuron(q::Float64, EXW_param::Tuple{Float64, Float64, Float64},
+    wdot::Function, T::Float64, dt::Float64=DEFAULT_SIMULATION_DT)
 
+    # extract Exwald parameters (for clarity)
+    (mu, lambda, tau) = EXW_param
+
+    # Parameters of drift-diffusion process time-to-barrier model corresponding to Wald component   
+    # v0 = spontaneous drift rate, s = noise amplitude (diffusion rate), barrier = barrier distance
+    (v0, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda)
+
+    # Trigger level for threshold-crossing times of N(v0,s) noise to be a Poisson process
+    # with mean interval tau.
+    trigger = TriggerThreshold_from_PoissonTau(v0, s, tau, dt)
+
+    # allocate array for spike train, 2x longer than expected number of spontaneous spikes up to time T
+    # It will be extended later if it turns out not to be big enough
+    N = 2*Int(ceil( T/(mu + tau)))
+    spiketime = zeros(Float64, N)
+
+    # initial canal state
+    δ    = 0.0
+    δdot = 0.0
+
+    # instantiate and initialize torsion pendulum model 
+    cupula_update = make_fractional_Steinhausen_stateUpdate_fcn(q, δ, δdot)
+
+    # This function specifies input to the Exwald process (Exwald neuron responding to head acceleration)
+    # Head angular acceleration wdot(t) determines cupula deflection δ(t) 
+    # which affects the drift rate of the Wald process and the threshold-crosssing rate of the Poisson.
+    # Note that cupula_update() is a dynamical filter, it has internal state variables 
+    # such that its output δ(t) is a function of state and input as per fractional torsion pendulum model.
+    # TBD set gain parameter G to match firing rate gains (spikes/s per deg/s) to data
+    # for neuron with the specified dynamic parameters.  
+    # e.g. see Landolt and Correia 1980
+    G = 0.5
+    v(t) = v0 + G*cupula_update(wdot(t))
+
+    t = 0.0    # current time
+    x = 0.0    # current location of drift-diffusion particle
+    i = 0      # index for inserting spike times into spiketime vector
+    while t <= T  
+
+        while x < barrier                                   # until reached barrier                                # time update
+            x = x + v(t) * dt + s * randn(1)[] * sqrt(dt)   # integrate noise
+            t = t + dt      
+        end
+        # x has hit the barrier, t - spiketime[i-1] is a sample from Wald(mu,lambda) 
+
+        # reset the drift-diffusion process
+        # nb we could interpolate the exact time-to-barrier and set x = 0.0
+        # but dt is small enough to get t close enough
+        x = x - barrier                           
+   
+        # wait for Poisson event 
+        while (v(t) + s * randn()[]) < trigger          
+            t = t + dt
+        end
+        # Poisson event generated, t - spiketime[i-1] is sample from Exwald(mu, lambda, tau)
+
+        # update spiketime index, make spiketime 25% longer if we have run off the end
+        i += 1
+        if i > N
+            N = Int(round(1.25* N))
+            spiketime = resize!(spiketime, N)   # lengthen spiketime vector by 10%
+        end
+
+        # put spike time in spiketime
+        spiketime[i] = t                              
+
+    end
+
+    return spiketime[1:i]
+end
+
+ 
 # return vector of interval lengths in spike train at specified phase (0-360)
 #   relative to sin stimulus with frequency freq. 
 # selected interval is the interval containing the phase point
@@ -1337,18 +1331,114 @@ function dynamicExwaldGainPhase_fromSines(exwald_param::Tuple{Float64,Float64,Fl
 
 end
 
+# returns Bode gain and phase for fractional torsion pendulum - Exwald neuron model 
+# as BGP = ( (Gain, GainSD), (Phase, PhaseSD), freq) 
+#   Each returned variable is MxN array where M = size(freqs) & N = independent replicates
+#   e.g. Gain[i,j] is the estimated gain at freq(i) on the jth replicate
+# use function BodePlots(BGP) to plot.
+# angularVelocity is max angular velocity in degrees per second, at all frequencies
+# band is bandwith (f0, f1) Hz
+# variable 'burn' specifies minimum burn-in time. We throw away the response up to the 
+#   beginning of the first stimulus period after 'burn', to allow canal dynamics to 
+#    reach steady-state before estimating gain and phase by fitting sines.  
+# variable 'Nperiods' is the number of periods that we fit data to (independent estimates of gain & phase).
+#   
+function fractionalSteinhausenExwald_BodeAnalysis(q::Float64, EXWparam::Tuple{Float64,Float64,Float64},
+    angularVelocity::Float64, band::Tuple{Float64, Float64}, Npts::Int64=16, 
+    dt = DEFAULT_SIMULATION_DT)  
+
+    # construct frequency vector
+    freq = collect(logrange(band..., Npts))
+
+
+
+    # Specify burn-in time in seconds 
+    burn = 2.0 
+
+    # specify number of response cycles to fit
+    Nfit = 16 
+
+    # Extract Exwald parameters
+    (mu, lambda, tau) = EXWparam
+
+    Gain  = zeros(Float64, length(freq), Nfit)
+    Phase = zeros(Float64, length(freq), Nfit)
+    
+    for i in 1:length(freq)
+
+        # specified stimulus amplitude amplitudeDegSec is maximum angular velocity in degrees per second
+        # we need head angular acceleration in rad/s^2
+        angularAcceleration = 2π*freq[i]*angularVelocity
+
+        period = 1.0/freq[i]
+        Nburn = Int(ceil(burn/period))  # number of burn-in cycles
+        Ncycles = Nburn + Nfit + 1   # number of simulation cycles
+                                        # including last period dropped to avoid GLR edge effect
+                                                                       
+        
+        T = Ncycles*period   # stimulus duration
+
+        # Sinusoidal stimulus amplitude specified as angular displacement in degrees, frequency in Hz.
+        # Required input to the model is angular acceleration in radians/s^2 (check) 
+        # so we convert degrees to radians (*π/180) and construct 2nd derivative of sin(2πf(t))
+        # ignoring the sign change 
+        wdot = t->sinewave([0.0, angularAcceleration, 0.0], 2π*freq[i], t)
+
+        # spike train
+        spiketime = fractionalSteinhausenExwald_Neuron(q, EXWparam, wdot, T)
+
+        #@infiltrate
+
+        # spike rate by Gaussian Local Rate filter with filter width 5x spontaneous interval
+        glr_dt = .001 # 1ms
+        (sampleTime, firingRate) = GLR(spiketime, 5.0*(mu+tau), glr_dt, 0.0, T)
+
+        # fit sine to Nfit cycles of response after burn-in
+        for j = 1:Nfit
+
+            # indices of sampleTime containing jth response cycle
+            t0 = (Nburn + j - 1)*period  # jth response cycle starts here
+            jthCycle = findall(t0 .<= sampleTime .<= (t0+period))
+
+            #@infiltrate
+
+            # fit sinewave to jth response cycle, pest = (offset, amplitude, phase)
+            (minf, pest, ret) = Fit_Sinewave_to_Firingrate(firingRate[jthCycle], 2π*freq[i], glr_dt)
+ 
+        Gain[i,j] = pest[2] #/(amplitude*2π*freq[i])  # gain spikes/sec per deg/sec (?? check)
+        Phase[i, j] = pest[3]*180.0/π   # radians to degrees
+        #@infiltrate
+        end
+        println(i, ", ", freq[i], ", ", i/length(freq))
+    end
+
+    (freq, Gain, Phase)
+
+end
+
+# Bode gain and phase plots 
+# freq = 1 x Nfreqs 
+# Gain, Phase = Nfreqs x Nreps array
 function drawBodePlots(freq, Gain, Phase)
+
+    # data dimensions not cross-checked, will crash with error anyway
+    Nfreqs = length(freq)
+    Nreps  = size(Gain)[2] 
+
+    # average gain and phase
+    avg_Gain = mean(Gain, dims=2)[:]
+    avg_Phase = mean(Phase, dims=2)[:]
 
     Fig = Figure(size = (800,600))
     #ax1 = Axis(Fig[1,1:2])
     ax2 = Axis(Fig[1,1], xscale = log10, yscale = log10)
-    ax3 = Axis(Fig[2,1], xscale = log10, yticks = [-40., -20.0, 0.0, 20., 40.0])
-    ylims!(ax3, [-45.0, 45.0])
+    ax3 = Axis(Fig[2,1], xscale = log10) #, yticks = [-40., -20.0, 0.0, 20., 40.0])
+    #ylims!(ax3, [-45.0, 45.0])
     
-    lines!(ax2, freq, Gain)
-    lines!(ax3, freq, Phase)
+    lines!(ax2, freq, avg_Gain)
+    lines!(ax3, freq, avg_Phase)
     
-    ylims!(ax2, [0.1, 10.])
+    #ylims!(ax2, [0.1, 10.])
     
     display(Fig)
     

@@ -430,6 +430,76 @@ end
 # frequency f (Hz), maxAngle = maximum angular displacement (degrees)
 # >>>>>>>NB stimulus amplitude is maximum angular displacement in degrees<<<
 #  because its easier to visualize the movement this way, e.g. wobbles +-10 deg at 1Hz
+function demo_Fractional_Steinhausen_Exwald_Neuron_sin(
+        q::Float64, EXWparam::Tuple{Float64,Float64,Float64}, 
+        f::Float64, maxAngle::Float64, T::Float64, dt::Float64=DEFAULT_SIMULATION_DT)
+
+    # stimulus amplitude
+    # convert from max degrees displacement to radians/s^2 max angular acceleration
+    A = maxAngle * (π/180.0)*4.0*π^2*f^2  
+
+    # # extract parameters of Exwald model
+    # (mu, lambda, tau) = Exwald_param
+    # (v, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda)   # Drift speed, noise s.d. & barrier height for Wald component
+    # trigger = TriggerThreshold_from_PoissonTau(v, s, tau, dt)            # threshold for Poisson component using same noise
+
+    # sinusoidal stimulus, angular acceleration at time t
+    wdot(t) = 4.0*pi^2*f^2*A*sin(2 * π * f * t)
+
+    # simulate spike train from fractional Steinhausen-Exwald neuron
+    spt = fractionalSteinhausenExwald_Neuron(q, EXWparam, wdot, T)
+
+   # Gaussian rate estimate
+   # Filter width s = 5x average spontaneous interval = mu + tau
+    #5.0*(EXWparam[1])
+   gdt = 1.0e-3                      # sample interval for GLR estimate
+   s = 1.0/(2π*f);
+   (tr, r) = GLR(spt, [s], gdt)       # rate estimate r at sample times t
+
+    #@infiltrate
+
+    # # # compute expected mean rate (1/mean interval) during stimulus
+    # cupulaModel = create_cupula_state_update()
+    # Gain = 10000.0  # spikes per second per radian deflection
+    # timevarying_τ = [PoissonTau_from_ThresholdTrigger(v.+Gain*cupulaModel(stimulus(tt))[2], s, trigger, DEFAULT_SIMULATION_DT) for tt in tr]
+    # timevarying_μ = [Wald_parameters_from_FirstpassageTimeModel(v.+Gain*cupulaModel(stimulus(tt))[2], s, barrier)[1] for tt in tr]
+    # timevarying_rate = 1.0./(timevarying_μ+timevarying_τ)
+
+    Fig = Figure(size=(1800, 400))
+    ax = Axis(Fig[1,1])
+
+    # plot spike train
+    splot!(ax, spt, 20.)
+
+    # plot rate estimate 
+    lines!(tr, r, linewidth=2.5, color = :blue)
+
+    # angular velocity and acceleration at GLR sample times
+    w_tr =  [-2.0*π*f*A*cos(2.0*π*f*tt) for tt in tr]
+    wdot_tr = [wdot(tt) for tt in tr]
+
+    # scale factor to match stimulus amplitude to response amplitude on plot
+    # (because we want to visually compare phase angles & don't care about amplitudes)
+    Scale = sqrt(var(r)/var(wdot_tr))
+    print("Hello:"); println(Scale)
+
+    # plot angular acceleration stimulus
+    lines!(tr, Scale*wdot_tr, color = :salmon1, linewidth = 2.5)
+
+     # plot angular velocity stimlus
+    lines!(tr, Scale*w_tr, color = :green, linewidth = 2.5)    
+
+    xlims!(0.0, tr[end])
+    ax.title = "Fractional Steinhausen-Exwald Neuron "
+    display(Fig)
+
+    return spt
+end
+
+# demo Steinhausen-Exwald neuron with sinusoidal stimulus
+# frequency f (Hz), maxAngle = maximum angular displacement (degrees)
+# >>>>>>>NB stimulus amplitude is maximum angular displacement in degrees<<<
+#  because its easier to visualize the movement this way, e.g. wobbles +-10 deg at 1Hz
 function demo_Steinhausen_Exwald_Neuron_sin(T::Float64, 
     Exwald_param::Tuple{Float64,Float64,Float64}, 
     f::Float64, maxAngle::Float64, dt::Float64=DEFAULT_SIMULATION_DT)
@@ -468,16 +538,22 @@ function demo_Steinhausen_Exwald_Neuron_sin(T::Float64,
     splot!(ax, spt, 20.)
 
     # plot rate estimate 
-    lines!(tr, r, linewidth=2.5)
+    lines!(tr, r, linewidth=2.5, color = :blue)
 
-    # # # expected rate
-    # lines!(tr,4.0*timevarying_rate, linewidth = 2.5 )
+    # angular velocity and acceleration at GLR sample times
+    w_tr =  [-2.0*π*f*A*cos(2.0*π*f*tt) for tt in tr]
+    wdot_tr = [wdot(tt) for tt in tr]
+
+    # scale factor to match stimulus amplitude to response amplitude on plot
+    # (because we want to visually compare phase angles & don't care about amplitudes)
+    Scale = var(r)/var(wdot_tr)
+    println(Scale)
 
     # plot angular acceleration stimulus
-    lines!(tr, [wdot(tt) for tt in tr], color = :salmon1, linewidth = 2.5)
+    lines!(tr, Scale*wdot_tr, color = :salmon1, linewidth = 2.5)
 
      # plot angular velocity stimlus
-    lines!(tr, [-2.0*π*f*A*cos(2.0*π*f*tt) for tt in tr], color = :green, linewidth = 2.5)   
+    lines!(tr, Scale*w_tr, color = :green, linewidth = 2.5)   
 
     xlims!(0.0, tr[end])
     ax.title = "Steinhausen-Exwald Neuron Model "
@@ -485,7 +561,6 @@ function demo_Steinhausen_Exwald_Neuron_sin(T::Float64,
 
     return spt
 end
-
 
 # Plot ISI distribution for Exwald neuron at specified phases of sinusoidal stimulus
 # overlay the model-predicted Exwald for each phase
