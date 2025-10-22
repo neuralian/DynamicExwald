@@ -10,7 +10,8 @@
 using Distributions, GLMakie, ImageFiltering, 
     Sound, PortAudio, SampledSignals, 
     Printf, MLStyle, SpecialFunctions, Random, MAT, 
-    BasicInterpolators, DSP
+    BasicInterpolators, DSP,
+    Infiltrator
 
 DEFAULT_SIMULATION_DT = 1.0e-5
 PLOT_SIZE = (800, 600)
@@ -31,7 +32,7 @@ function splot!(ax::Axis, spiketime::Vector{Float64}, height::Float64=1.0, lw::F
 
     spikes = linesegments!(ax, vec([( Point2f(t, 0.0), Point2f(t, height)) for t in spiketime]),
         linewidth = lw, color = color)
-    baseline = lines!(ax, [xlims(ax)[1], xlims(ax)[2]], [0.0, 0.0], color = color)
+    baseline = lines!(ax, [0.0, spiketime[end]], [0.0, 0.0], color = color)
     (spikes, baseline)
 end
 
@@ -763,17 +764,21 @@ function make_fractional_Steinhausen_stateUpdate_fcn(
 end
     
 # Spike times of Exwald neuron with input proportional to cupula deflection (δ)
-# computed by fractional torsion pendulum model, δ'' + Aδ' + Bδ = Dq wdot(t)
+# computed by fractional torsion pendulum model, δ'' + Aδ' + Bδ = Dq D w(t)
 #   EXW_param = (μ, λ, τ)
 #   q=0 gives classical torsion pendulum, 0.0<q<1 gives frequency-independent phase advance πq/2
-#   Head acceleration wdot is a function of t on simulation interval (0,T)
-#   e.g. t->sinewave((0.0, 1.0, 0.0), 2.0*pi, t) # 1Hz unit amplitude sine wave
+#   Head angular velocity is a function of t on simulation interval (0,T)
+#   e.g. w =  t->sinewave((0.0, 1.0, 0.0), 2.0*pi, t) # 1Hz unit amplitude sine wave
+#   w must be defined at t-dt and t+dt for every t, so we can compute central difference derivative
 # Returns vector of spike times
 function fractionalSteinhausenExwald_Neuron(q::Float64, EXW_param::Tuple{Float64, Float64, Float64},
-    wdot::Function, T::Float64, dt::Float64=DEFAULT_SIMULATION_DT)
+    w::Function, T::Float64, dt::Float64=DEFAULT_SIMULATION_DT)
 
     # extract Exwald parameters (for clarity)
     (mu, lambda, tau) = EXW_param
+
+    # angular acceleration wdot from w
+    wdot = t-> diffcd(w, t, dt)
 
     # Parameters of drift-diffusion process time-to-barrier model corresponding to Wald component   
     # v0 = spontaneous drift rate, s = noise amplitude (diffusion rate), barrier = barrier distance
@@ -842,6 +847,101 @@ function fractionalSteinhausenExwald_Neuron(q::Float64, EXW_param::Tuple{Float64
 
     return spiketime[1:i]
 end
+   
+# N spike times of Exwald neuron with input proportional to cupula deflection (δ)
+# computed by fractional torsion pendulum model with angular velocity input w(t), 
+#         δ'' + Aδ' + Bδ = Dq D w(t)
+#   EXW_param = (μ, λ, τ)
+#   q=0 gives classical torsion pendulum, 0.0<q<1 gives frequency-independent phase advance πq/2
+#   Input angular velocity e.g. w = t->sinewave((0.0, 1.0, 0.0), 1.0, t) # w(t) = sin(2πt)
+#      w must be able to return w(t-dt) and w(t+dt) if it is called at t, 
+#         because its derivative (angular acceleration) will be computed by central difference.
+#         So if w(t) is implemented using a vector of function values (ie w(t)is an alias for w[t])
+#         you (may) need special cases for w(-dt) and w(T+dt) to compute the derivative at endpoints.  
+# Returns vector of spike times
+function fractionalSteinhausenExwald_Neuron(q::Float64, EXW_param::Tuple{Float64, Float64, Float64},
+    w::Function, N::Int64, dt::Float64=DEFAULT_SIMULATION_DT)
+
+    # extract Exwald parameters (for clarity)
+    (mu, lambda, tau) = EXW_param
+
+    # wdot(t) is first derivative of w(.) at t (angular acceleration given angular velocity)
+    wdot = t -> diffcd(w, t)
+
+    # Parameters of drift-diffusion process time-to-barrier model corresponding to Wald component   
+    # v0 = spontaneous drift rate, s = noise amplitude (diffusion rate), barrier = barrier distance
+    (v0, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda)
+
+    # Trigger level for threshold-crossing times of N(v0,s) noise to be a Poisson process
+    # with mean interval tau.
+    trigger = TriggerThreshold_from_PoissonTau(v0, s, tau, dt)
+
+    # allocate array for spike train, 
+    spiketime = zeros(Float64, N)
+
+    # initial canal state
+    δ    = 0.0
+    δdot = 0.0
+
+    # Instantiate and initialize torsion pendulum model 
+    # cupula_update(wdot(t)) returns cupula deflection (radians) given head angular acceleration at t 
+    # This function has internal state variables (δ, δ') plus M=2N+1 auxiliary state variables
+    #      for an Mth-order approximation to the fractional derivative   
+    cupula_update = make_fractional_Steinhausen_stateUpdate_fcn(q, δ, δdot)
+
+    # Specify the time-varying noise input to the physical components of the Exwald process
+    # In the (simplest) model implemented here, cupula deflection δ(t) depends dynamically on 
+    #   head angular acceleration via the fractional Steinhausen model 
+    #   (using parameters from Hullar and Correia and Landolt)  
+    #   Spontaneous discharge is modelled using gaussian noise crossing a trigger threshold to generate
+    #   Poisson events and a drift-diffusion process to model the Wald censoring process.
+    #   I assume that its the same Gaussian noise N(m, s) = m + N(0,s) in each sub-process, and that
+    #   cupula deflection linearly alters the mean. This has a simple physical interpretation ie
+    #   the noise is (noisy) net current entering a hair cell whose mean rises and falls with cupula deflection.  
+    #   TBD set gain parameter G to match firing rate gains (spikes/s per deg/s) to data
+    #   for neuron with the specified dynamic parameters.  I have picked a value for G here that gives plausible
+    #   results but probably this needs to be a neuron-specific number passed as an argument.
+    #   see Landolt and Correia 1980
+    G = 0.5
+    v(t) = v0 + G*cupula_update(wdot(t))
+
+    t = 0.0    # current time
+    x = 0.0    # current location of drift-diffusion particle
+    i = 0      # index for inserting spike times into spiketime vector
+    while i < N
+
+        while x < barrier                                   # until reached barrier                                # time update
+            x = x + v(t) * dt + s * randn(1)[] * sqrt(dt)   # integrate noise
+            t = t + dt      
+        end
+        # x has hit the barrier, t - spiketime[i-1] is a sample from Wald(mu,lambda) 
+
+        # reset the drift-diffusion process
+        # nb we could interpolate the exact time-to-barrier and set x = 0.0
+        # but dt is small enough to get t close enough
+        x = x - barrier                           
+   
+        # wait for Poisson event 
+        while (v(t) + s * randn()[]) < trigger          
+            t = t + dt
+        end
+        # Poisson event generated, t - spiketime[i-1] is sample from Exwald(mu, lambda, tau)
+
+        # update spiketime index, make spiketime 25% longer if we have run off the end
+        i += 1
+        if i > N
+            N = Int(round(1.25* N))
+            spiketime = resize!(spiketime, N)   # lengthen spiketime vector by 10%
+        end
+
+        # put spike time in spiketime
+        spiketime[i] = t                              
+
+    end
+
+    return spiketime
+end
+
 
  
 # return vector of interval lengths in spike train at specified phase (0-360)
@@ -892,7 +992,7 @@ function intervalPhase(spiketime::Vector{Float64}, phase::Float64, freq::Float64
     wavelength = 1.0 / freq
     cycles = Int(floor(T / wavelength))
     sampleTime = wavelength * (phase/360.0.+0:(cycles-1))
-    samnpleTime = sampleTime[findall(sampleTime .< T)[1:(end-1)]]
+    sampleTime = sampleTime[findall(sampleTime .< T)[1:(end-1)]]
     interval = zeros(length(sampleTime))
 
     # #@infiltrate
@@ -1350,28 +1450,31 @@ function fractionalSteinhausenExwald_BodeAnalysis(q::Float64, EXWparam::Tuple{Fl
     # construct frequency vector
     freq = collect(logrange(band..., Npts))
 
-
-
-    # Specify burn-in time in seconds 
-    burn = 2.0 
+    # Specify min burn-in time in seconds 
+    burn = 10.0 
 
     # specify number of response cycles to fit
-    Nfit = 16 
+    Nfit = 32 
 
     # Extract Exwald parameters
     (mu, lambda, tau) = EXWparam
 
-    Gain  = zeros(Float64, length(freq), Nfit)
-    Phase = zeros(Float64, length(freq), Nfit)
+    Gain  = zeros(Float64, length(freq))
+    Phase = zeros(Float64, length(freq))
+    DC = zeros(Float64, length(freq))
+
+    F = Figure()
+    ax = Axis(F[1,1])
     
     for i in 1:length(freq)
 
         # specified stimulus amplitude amplitudeDegSec is maximum angular velocity in degrees per second
         # we need head angular acceleration in rad/s^2
-        angularAcceleration = 2π*freq[i]*angularVelocity
+        #angularAcceleration = 2π*freq[i]*angularVelocity
 
         period = 1.0/freq[i]
         Nburn = Int(ceil(burn/period))  # number of burn-in cycles
+        #println("burn: ", Nburn)
         Ncycles = Nburn + Nfit + 1   # number of simulation cycles
                                         # including last period dropped to avoid GLR edge effect
                                                                        
@@ -1382,37 +1485,52 @@ function fractionalSteinhausenExwald_BodeAnalysis(q::Float64, EXWparam::Tuple{Fl
         # Required input to the model is angular acceleration in radians/s^2 (check) 
         # so we convert degrees to radians (*π/180) and construct 2nd derivative of sin(2πf(t))
         # ignoring the sign change 
-        wdot = t->sinewave([0.0, angularAcceleration, 0.0], 2π*freq[i], t)
+        w = t->sinewave([0.0, angularVelocity, 0.0], freq[i], t)
 
         # spike train
-        spiketime = fractionalSteinhausenExwald_Neuron(q, EXWparam, wdot, T)
+        spiketime = fractionalSteinhausenExwald_Neuron(q, EXWparam, w, T)
 
         #@infiltrate
 
         # spike rate by Gaussian Local Rate filter with filter width 5x spontaneous interval
         glr_dt = .001 # 1ms
-        (sampleTime, firingRate) = GLR(spiketime, 5.0*(mu+tau), glr_dt, 0.0, T)
+        (sampleTime, firingRate) = GLR(spiketime, period/5.0, glr_dt, 0.0, T)
 
         # fit sine to Nfit cycles of response after burn-in
-        for j = 1:Nfit
+        t0 = Nburn*period
+        jFit = findall(t0 .<= sampleTime .< (t0+period*Nfit))
+        (pest, _, _) = fit_Sinewave_to_Firingrate(firingRate[jFit], freq[i], glr_dt)
+        Gain[i]  = pest[2] #/(amplitude*2π*freq[i])  # gain spikes/sec per deg/sec (?? check)
+        Phase[i] = pest[3]   
+        DC[i]    = pest[1]    
 
-            # indices of sampleTime containing jth response cycle
-            t0 = (Nburn + j - 1)*period  # jth response cycle starts here
-            jthCycle = findall(t0 .<= sampleTime .<= (t0+period))
+        # splot!(ax,spiketime)
+        # lines!(sampleTime, firingRate)
 
-            #@infiltrate
+        # F
 
-            # fit sinewave to jth response cycle, pest = (offset, amplitude, phase)
-            (minf, pest, ret) = Fit_Sinewave_to_Firingrate(firingRate[jthCycle], 2π*freq[i], glr_dt)
- 
-        Gain[i,j] = pest[2] #/(amplitude*2π*freq[i])  # gain spikes/sec per deg/sec (?? check)
-        Phase[i, j] = pest[3]*180.0/π   # radians to degrees
         #@infiltrate
-        end
-        println(i, ", ", freq[i], ", ", i/length(freq))
-    end
 
-    (freq, Gain, Phase)
+        # for j = 1:Nfit
+
+        #     # indices of sampleTime containing jth response cycle
+        #     t0 = (Nburn + j - 1)*period  # jth response cycle starts here
+        #     jthCycle = findall(t0 .<= sampleTime .<= (t0+period))
+
+        #     #@infiltrate
+
+        #     # fit sinewave to jth response cycle, pest = (offset, amplitude, phase)
+        #     (pest, _, _) = fit_Sinewave_to_Firingrate(firingRate[jthCycle], freq[i], glr_dt)
+ 
+        # Gain[i,j] = pest[2] #/(amplitude*2π*freq[i])  # gain spikes/sec per deg/sec (?? check)
+        # Phase[i, j] = pest[3]   # radians to degrees
+        # #@infiltrate
+        # end
+        #println(i, ", ", freq[i], ", ", i/length(freq))
+        print(".")  # indicator to show that something is happening ...
+    end
+    println("")
+    (freq, Gain, Phase, DC)
 
 end
 
@@ -1423,11 +1541,11 @@ function drawBodePlots(freq, Gain, Phase)
 
     # data dimensions not cross-checked, will crash with error anyway
     Nfreqs = length(freq)
-    Nreps  = size(Gain)[2] 
+    Nreps  = 1 #size(Gain)[2] 
 
-    # average gain and phase
-    avg_Gain = mean(Gain, dims=2)[:]
-    avg_Phase = mean(Phase, dims=2)[:]
+    # # average gain and phase
+    # avg_Gain = mean(Gain, dims=2)[:]
+    # avg_Phase = mean(Phase, dims=2)[:]
 
     Fig = Figure(size = (800,600))
     #ax1 = Axis(Fig[1,1:2])
@@ -1435,8 +1553,8 @@ function drawBodePlots(freq, Gain, Phase)
     ax3 = Axis(Fig[2,1], xscale = log10) #, yticks = [-40., -20.0, 0.0, 20., 40.0])
     #ylims!(ax3, [-45.0, 45.0])
     
-    lines!(ax2, freq, avg_Gain)
-    lines!(ax3, freq, avg_Phase)
+    lines!(ax2, freq, Gain)
+    lines!(ax3, freq, -Phase*180.0/π)
     
     #ylims!(ax2, [0.1, 10.])
     
@@ -1447,12 +1565,36 @@ function drawBodePlots(freq, Gain, Phase)
     Fig
 end
 
-
+# NB f in Hz
 function sinewave(p, f, t)
 
     p[1] .+ p[2]*sin.(2.0*π*f*t .- p[3])
 
 end
+
+# derivative of function of t by central difference
+# usage e.g.:
+#    t = t=0.0:dt:5.0
+#    f = t-> sinewave((0.0, 1.0, 0.0), 1.0, t)  # f is a function of t (sin(2πt) in this e.g.)
+#   df = t->diffcd(f, t)   # df is a function of t, returns the derivative of f at t (2πcos(2πt) here)
+#   These functions can be broadcast over vectors or ranges of t: x = f.(t), dx = df.(t)
+function diffcd(f::Function, t::Float64, dt::Float64=DEFAULT_SIMULATION_DT)
+
+    return (f(t+dt) - f(t-dt))/(2*dt)
+
+end
+
+# # central difference differentiator
+# function diffcd(f::Function, t::Vector{Float64}, dt::Float64=DEFAULT_SIMULATION_DT)
+
+#     N = length(t)
+#     dx = zeros(Float64, length(t))
+#     for i in 1:N
+#         dx[i] = (f(t+dt) - f(t-dt))/(2*dt)
+#     end
+#     return dx
+# end
+
 
 
         

@@ -101,16 +101,12 @@ end
 #   dt is the GLR sample resolution, default .01 corresponds to max sine frequnecy (Nyquist) 50Hz
 # 
 function Fit_Sinewave_to_Spiketrain(spiketime::Vector{Float64}, 
-        F::Float64, dt::Float64=0.01, N::Int64=0, Nburn::Int64=1)
+        f::Float64, dt::Float64=0.01, N::Int64=0, Nburn::Int64=1)
 
 
-    period = 1.0/F 
-    if N==0
-        N = Int(floor((spiketime[end]-Nburn*period)/period))  # number of full cycles in data after burn-in
-    end
+    period = 1.0/f 
+    w = 2πf
 
-    T = (Nburn + N)*period  # end of fitting interval
-    #println((Nburn+N)*period, T)
 
     # firing rate (all data)
     (t, r) = GLR(spiketime, period/16.0, dt)
@@ -128,7 +124,7 @@ function Fit_Sinewave_to_Spiketrain(spiketime::Vector{Float64},
     grad = [0.0, 0.0, 0.0]   # required but not used
     # Goodness of fit is sum of squared residual
  #   Goodness = (param, grad) -> sum( (r .- (param[1] .+ param[2]*sin.(2.0*π*(F*t.-param[3])))  ).^2) 
-    Goodness = (param, grad) -> sum( (r .- sinewave(param,F,t)  ).^2)/length(t)
+    Goodness = (param, grad) -> sum( (r .- sinewave(param,f,t)  ).^2)/length(t)
 
   #  optStruc = Opt(:LN_NELDERMEAD,3)  # set up 3-parameter NLopt optimization problem
     optStruc = Opt(:LN_PRAXIS,3)  # set up 3-parameter NLopt optimization problem
@@ -146,14 +142,16 @@ function Fit_Sinewave_to_Spiketrain(spiketime::Vector{Float64},
     (minf, pest, ret) = optimize(optStruc, Pinit)
 
 
-    (minf, pest, ret)
+    (pest, minf, ret)
 
 end
 
 # Fit sine wave of frequency F /Hz to firing rate samples
 #   dt is sample interval
-# 
-function Fit_Sinewave_to_Firingrate(r::Vector{Float64}, f::Float64, dt::Float64)
+#   rate vector r should be trimmed before calling this function,
+#   to give steady-state response (remove periods at start to allow burn-in) 
+#   and no edge effects from rate estimator (remove last period)  
+function fit_Sinewave_to_Firingrate(r::Vector{Float64}, f::Float64, dt::Float64)
 
 
     # sample times starting at t=dt
@@ -162,30 +160,30 @@ function Fit_Sinewave_to_Firingrate(r::Vector{Float64}, f::Float64, dt::Float64)
 
     # parameters to be fitted are mean rate, amplitude and phase
     r0  = mean(r)
-    a0 = (maximum(r)-r0)/sqrt(2.0)
-    phi0 = 0.0
+    a0 = (maximum(r)-r0)
+    phi0 = -pi/2.
     Pinit = [r0, a0, phi0]
 
     grad = [0.0, 0.0, 0.0]   # required input to fitting code but not used
     # Goodness of fit is mean squared error
     Goodness = (param, grad) -> sum( (r .- sinewave(param,f,t)  ).^2)/N
 
-  #  optStruc = Opt(:LN_NELDERMEAD,3)  # set up 3-parameter NLopt optimization problem
-    optStruc = Opt(:LN_PRAXIS,3)  # set up 3-parameter NLopt optimization problem
+    optStruc = Opt(:LN_NELDERMEAD,3)  # set up 3-parameter NLopt optimization problem
+    #optStruc = Opt(:LN_PRAXIS,3)  # set up 3-parameter NLopt optimization problem
     
     NLopt.min_objective!(optStruc, Goodness)       # objective is to minimize goodness
 
-    NLopt.lower_bounds!(optStruc, [-maximum(r), 0.0, -.5])  # constrain all parameters > 0
-    optStruc.upper_bounds = [maximum(r), 2.0*maximum(r), .5]
+    NLopt.lower_bounds!(optStruc, [-maximum(r), 0., -pi])  # constrain all parameters > 0
+    optStruc.upper_bounds = [maximum(r), 2.0*maximum(r), pi]
 
     #optStruc.xtol_rel = 1e-12
-    NLopt.xtol_rel!(optStruc, 1.0e-16)
+    NLopt.xtol_rel!(optStruc, 1.0e-8)
 
 
 
     (minf, pest, ret) = optimize(optStruc, Pinit)
 
 
-    (minf, pest, ret)
+    (pest, minf, ret)
 
 end
