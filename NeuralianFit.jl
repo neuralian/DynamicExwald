@@ -14,7 +14,7 @@ function Fit_Exwald_to_ISI(ISI::Vector{Float64}, Pinit::Vector{Float64})
 
     # likelihood function
     grad = zeros(3)
-    LHD = (param, grad) -> sum(log.(Exwaldpdf(param[1], param[2], param[3], ISI))) - (param[1]^2 + param[3]^2)
+    LHD = (param, grad) -> sum(log.(Exwaldpdf(param[1], param[2], param[3], ISI))) #- (param[1]^2 + param[3]^2)
 
     #@infiltrate
 
@@ -31,6 +31,7 @@ function Fit_Exwald_to_ISI(ISI::Vector{Float64}, Pinit::Vector{Float64})
     Grad = zeros(3)  # dummy argument (uisng gradient free algorithm)
     (maxf, pest, ret) = optimize(optStruc, Pinit)
 
+    (maxf, abs.(pest), ret)
 
 end
 
@@ -41,22 +42,26 @@ function Fit_Exwald_to_ISI(ISI::Vector{Float64}, spont::Vector{Float64}, Pinit::
     # likelihood function
     grad = zeros(3)
     #w = [0.0, 100.0, .0]
-    LHD = (param, grad) -> sum(log.(Exwaldpdf(param[1], param[2], param[3], ISI))) #- sum((w.*abs.(param-spont)./spont))
+    LHD = (param, grad) -> sum(log.(Exwaldpdf(param[1]^2, param[2]^2, param[3]^2, ISI))) #- sum((w.*abs.(param-spont)./spont))
 
     #@infiltrate
 
-    optStruc = Opt(:LN_PRAXIS, 3)   # set up 3-parameter NLopt optimization problem
+    optStruc = Opt(:LN_NELDERMEAD, 3)   # set up 3-parameter NLopt optimization problem
 
     optStruc.max_objective = LHD       # objective is to maximize likelihood
 
-    optStruc.lower_bounds = [0.0, 0.0, 0.0]   # constrain all parameters > 0
-    #optStruc.upper_bounds = [1.0, 25.0,5.0]
+    # optStruc.lower_bounds = [0.005, 0.01, 0.01]   # constrain all parameters > 0
+    # optStruc.upper_bounds = [.2,50.0, 1.0]
 
     #optStruc.xtol_rel = 1e-12
     optStruc.xtol_rel = 1.0e-16
 
     Grad = zeros(3)  # dummy argument (uisng gradient free algorithm)
     (maxf, pest, ret) = optimize(optStruc, Pinit)
+
+    println("pest: ",sqrt.(pest))
+
+    (maxf, sqrt.(pest), ret)
 
 
 end

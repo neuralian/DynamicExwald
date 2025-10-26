@@ -456,6 +456,12 @@ end
 # Exwald pdf at t (From Schwarz (2002) DOI: 10.1081/STA-120017215)
 function Exwaldpdf(mu::Float64, lambda::Float64, tau::Float64, t::Float64)
 
+    # force μ, λ, τ > 0.0 
+    # for fitting, so Nelder-Mead can go -ve  
+    mu = abs(mu)
+    lambda = abs(lambda)
+    tau = abs(tau)
+
     if t == 0.0
         return 0.0
     else
@@ -571,11 +577,6 @@ function Exwald_Neuron(T::Float64,
     stimulus::Function,
     dt::Float64=DEFAULT_SIMULATION_DT)  
 
-
-   # allocate vector for sample of size N 
-
-    dt = DEFAULT_SIMULATION_DT  # just to be clear
-
     # extract Exwald parameters
     (mu, lambda, tau) = Exwald_param
 
@@ -602,6 +603,107 @@ function Exwald_Neuron(T::Float64,
     # spike train is cumulative sum of intervals
     return spiketime[1:nSpikes]
 
+end
+
+# returns neuron = (exwald_neuron, EXW_param) 
+# where neuron is a closure function to simulate exwald_neuron(δ(t)) given cupula deflection δ(t)
+# and EXW_param = (μ, λ, τ) is a tuple containing the neuron's parameters
+# closure returns true if the neuron spiked in current time interval, false otherwise
+function make_Exwald_neuron(EXW_param::Tuple{Float64, Float64, Float64}, dt::Float64=DEFAULT_SIMULATION_DT)
+
+    # extract Exwald parameters
+    (mu, lambda, tau) = EXW_param
+
+
+    # First passage time model parameters for spontaneous Wald component 
+    (v0, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda)
+
+    # trigger threshold for spontaneous (mean==tau) Exponwential samples  with N(v0,s) noise
+    trigger = TriggerThreshold_from_PoissonTau(v0, s, tau, dt)
+
+    G = 1.0  # mean input to exwald components is v = v0 + G*δ
+    x = 0.0
+    refractory = true
+
+    function exwald_neuron(δ::Function, t::Float64)
+        
+        if refractory 
+            x = x + (v0 + G*δ(t))*dt + s * randn(1)[] * sqrt(dt)   # integrate noise
+            if x >= barrier      
+                refractory = false    # refractory period is over when barrier is reached
+                x = x - barrier       # reset integral for next refractory period
+            else
+                return false  # still refractory
+            end
+        else
+            if (v0 + G*δ(t) + s*randn()[]) > trigger  # Poisson event
+                refractory = true
+                return true
+            else
+                return false
+            end
+        end
+    end
+
+    return (exwald_neuron, EXW_param)
+end
+
+# returns (spt, input)
+# spt = neuron spike train responding to input(t) from time 0 to T 
+function spiketimes(neuron::Tuple{Function, Tuple}, input::Function, T::Float64, dt::Float64=DEFAULT_SIMULATION_DT)
+    
+    # unpack neuron
+    (the_neuron, (μ, λ, τ) ) = neuron
+
+    # timesteps
+    t = 0.0:dt:T
+    M = length(t)
+
+    # record input
+    u = zeros(Float64, M)
+
+    # allocate spike time vector 2x expected number of spontaneous spikes
+    spontaneous_rate = 1.0/(μ+τ)  
+    N = Int(round(2.0*T*spontaneous_rate))
+    spiketime = zeros(Float64, N)
+
+    j = 0 # spike count
+    for i in 1:M
+        u[i] = input(t[i])
+        if the_neuron(input, t[i])==true   # neuron fired
+            j += 1 
+            if i > N   # overflow
+                N = Int(round(N*1.25))
+                resize!(spiketime, N)  # make spiketime vector 25% longer
+            end
+            spiketime[j] = t[i]
+        end
+    end
+
+    return (spiketime[1:j], u)
+end
+
+# returns N interspike intervals from neuron responding to input(t) from time 0 to T 
+function interspike_intervals(neuron::Tuple{Function, Tuple}, input::Function, N::Int64, dt::Float64=DEFAULT_SIMULATION_DT)
+    
+    # unpack neuron
+    (the_neuron, (μ, λ, τ) ) = neuron
+
+    interval = zeros(Float64, N)
+
+    t = 0.0
+    previous_spiketime = 0.0
+    i = 0
+    while i < N
+        t += dt
+        if the_neuron(input(t))==true   # neuron fired
+            i += 1 
+            interval[i] = t - previous_spiketime
+            previous_spiketime = t  
+        end
+    end
+
+    return interval
 end
 
 # Function to compute Oustaloup approximation parameters
@@ -691,7 +793,7 @@ end
         #     d[i] = FSS_update(x[i])
         # end
 ##
-function make_fractional_Steinhausen_stateUpdate_fcn(
+function make_fractional_Steinhausen_stateUpdate_velocity_fcn(
     q::Float64, y0::Float64, yp0::Float64; 
     dt::Float64=DEFAULT_SIMULATION_DT, f0::Float64=1e-2, f1::Float64=2e1)
 
@@ -720,12 +822,14 @@ function make_fractional_Steinhausen_stateUpdate_fcn(
     
     M = length(poles)  # ... = 2N+1
 
-    # Augmented state: u = [y, y', v1, ..., vM]
+    # Augmented state: x = [y, y', v1, ..., vM]
     x = [y0; yp0; zeros(M)]
     du = zeros(length(x))
 
-    # State update function
-    function update(u::Float64)
+    # State update function of angular velocity ̇ω at current time step
+    function update(ω::Function, t::Float64)
+
+        wdot = diffcd(ω, t)  # angular acceleration
 
         y =  x[1]
         dy = x[2]
@@ -733,9 +837,9 @@ function make_fractional_Steinhausen_stateUpdate_fcn(
         
         # Approximate D^q u 
         if (q==0.0) 
-            approx_dq = u
+            approx_dq = wdot
         else
-            approx_dq = K * u
+            approx_dq = K * wdot
             for i in 1:M
                 approx_dq += residues[i] * vs[i]
             end
@@ -747,7 +851,7 @@ function make_fractional_Steinhausen_stateUpdate_fcn(
         
         # Auxiliary state updates
         for i in 1:M
-            du[2 + i] = -p_i[i] * vs[i] + u
+            du[2 + i] = -p_i[i] * vs[i] + wdot
         end
 
         # Euler integration
@@ -762,6 +866,322 @@ function make_fractional_Steinhausen_stateUpdate_fcn(
     # return closure
     return update 
 end
+
+
+# # Create closure to compute state update for fractional Steinhausen model 
+# #       y'' + A y' + B Dq y = Dq u(t)
+# # with fractional derivative Dq = d^q/dt^q, -1<q<1 (Landolt and Correia, 1980; Magin, 2005).
+# #   q = 0.0 gives classical torsion pendulum model
+# #   q > 0.0 gives phase advance πq/2 at all frequencies, 
+# #           in particular q=1.0 turns velocity sensitivity into acceleration sensitivity.
+# # Accurate enough in the specified frequency band (f0, f1) /Hz. Outside that all bets are off.
+# # Construct the state update function and initialize state: 
+# #       cupula_update = make_fractional_Steinhausen_stateUpdate_fcn(<params>)
+# # Use the state update function to update state at ith timestep and return cupula deflection (rad):
+# #       cupula_deflection = cupula_update(u_i)
+# # Uses Oustaloup approximation to Dq over specified frequency band (f0,f1) in Hz.
+# # Default order of approximation N=2 (M=2*N+1 = 5th order linear TF), use N up to 5 for better approx.
+# # Augmented state includes auxiliary variables for the approximation.
+# # Initial state is [y0, y'(0), 0, 0, ..., 0] (M zeros for auxiliary states).
+# # Example usage
+#         # q = -0.5  # fractional order
+#         # w = 2.0  # frequency of input rad/s
+#         # T = 12.0
+#         # dt = DEFAULT_SIMULATION_DT
+#         # t = 0:dt:T
+#         # x = sin.(w .* t)  # input angular velocity (rad/s)
+#         # d = zeros(length(t))
+
+#         # FSS_update = make_fractional_Steinhausen_stateUpdate_fcn(q, 0., 0.)
+
+#         # for i in 1:length(t)
+#         #     d[i] = FSS_update(x[i])
+#         # end
+# ##
+# function make_fractional_Steinhausen_stateUpdate_velocity_fcn(
+#     q::Float64, y0::Float64, yp0::Float64; 
+#     dt::Float64=DEFAULT_SIMULATION_DT, f0::Float64=1e-2, f1::Float64=2e1)
+
+#     # Fractional Steinhausen model: I.y'' + P.y' + K.Dq y = I.wdot, 
+#     I = 2.0e-12   # coeff of q'', endolymph moment of inertia kg.m^2
+#     P = 6.0e-11   # coeff of q', viscous damping N.m.s/rad 
+#     G = 1.0e-10    # coeff of q, cupula stiffness N.m/rad 
+
+#     # Update equation coeffs from model parameters
+#     A = P/I
+#     B = G/I
+ 
+#     # convert frequency band from Hz to rad/s
+#     wb = 2.0*pi*f0
+#     wh = 2.0*pi*f1
+
+#     # Approximation of order 2N+1 (so N=2 is 5th order)
+#     N = 5
+    
+#     # Compute Oustaloup parameters
+#     K, poles, xeros = oustaloup_zeros_poles(q, N, wb, wh)
+    
+#     # Compute residues and pole dynamics coefficients (the p_i = ω_k >0 for v' = -p_i v + y)
+#     residues, _ = oustaloup_residues(K, poles, xeros)
+#     p_i = poles  # p_i = ω_k for the dynamics v' = -p_i v + y
+    
+#     M = length(poles)  # ... = 2N+1
+
+#     # Augmented state: x = [y, y', v1, ..., vM]
+#     x = [y0; yp0; zeros(M)]
+#     du = zeros(length(x))
+
+#     # State update function of angular velocity ̇ω at current time step
+#     function update(ω::Function, t::Float64)
+
+#         wdot = diffcd(ω, t)  # angular acceleration
+
+#         y =  x[1]
+#         dy = x[2]
+#         vs = @view x[3:end]
+        
+#         # Approximate D^q u 
+#         if (q==0.0) 
+#             approx_dq = wdot
+#         else
+#             approx_dq = K * wdot
+#             for i in 1:M
+#                 approx_dq += residues[i] * vs[i]
+#             end
+#         end
+        
+#         # "ordinary" state updates
+#         du[1] = dy
+#         du[2] = approx_dq - A * dy - B * y
+        
+#         # Auxiliary state updates
+#         for i in 1:M
+#             du[2 + i] = -p_i[i] * vs[i] + wdot
+#         end
+
+#         # Euler integration
+#         for i in 1:length(x)
+#             x[i] += du[i] * dt
+#         end
+
+#         return x[1]  # return cupula deflection
+    
+#     end
+
+#     # return closure
+#     return update 
+# end
+
+
+# Create closure to compute state update for fractional Steinhausen model 
+#       y'' + A y' + B Dq y = Dq u(t)
+# with fractional derivative Dq = d^q/dt^q, -1<q<1 (Landolt and Correia, 1980; Magin, 2005).
+#   q = 0.0 gives classical torsion pendulum model
+#   q > 0.0 gives phase advance πq/2 at all frequencies, 
+#           in particular q=1.0 turns velocity sensitivity into acceleration sensitivity.
+# Accurate enough in the specified frequency band (f0, f1) /Hz. Outside that all bets are off.
+# Construct the state update function and initialize state: 
+#       cupula_update = make_fractional_Steinhausen_stateUpdate_fcn(<params>)
+# Use the state update function to update state at ith timestep and return cupula deflection (rad):
+#       cupula_deflection = cupula_update(u_i)
+# Uses Oustaloup approximation to Dq over specified frequency band (f0,f1) in Hz.
+# Default order of approximation N=2 (M=2*N+1 = 5th order linear TF), use N up to 5 for better approx.
+# Augmented state includes auxiliary variables for the approximation.
+# Initial state is [y0, y'(0), 0, 0, ..., 0] (M zeros for auxiliary states).
+# Example usage
+        # q = -0.5  # fractional order
+        # w = 2.0  # frequency of input rad/s
+        # T = 12.0
+        # dt = DEFAULT_SIMULATION_DT
+        # t = 0:dt:T
+        # x = sin.(w .* t)  # input angular velocity (rad/s)
+        # d = zeros(length(t))
+
+        # FSS_update = make_fractional_Steinhausen_stateUpdate_fcn(q, 0., 0.)
+
+        # for i in 1:length(t)
+        #     d[i] = FSS_update(x[i])
+        # end
+##
+# function make_fractional_Steinhausen_stateUpdate_velocity_fcn(
+#     q::Float64, y0::Float64, yp0::Float64; 
+#     dt::Float64=DEFAULT_SIMULATION_DT, f0::Float64=1e-2, f1::Float64=2e1)
+
+#     # Fractional Steinhausen model: I.y'' + P.y' + K.Dq y = I.wdot, 
+#     I = 2.0e-12   # coeff of q'', endolymph moment of inertia kg.m^2
+#     P = 6.0e-11   # coeff of q', viscous damping N.m.s/rad 
+#     G = 1.0e-10    # coeff of q, cupula stiffness N.m/rad 
+
+#     # Update equation coeffs from model parameters
+#     A = P/I
+#     B = G/I
+ 
+#     # convert frequency band from Hz to rad/s
+#     wb = 2.0*pi*f0
+#     wh = 2.0*pi*f1
+
+#     # Approximation of order 2N+1 (so N=2 is 5th order)
+#     N = 5
+    
+#     # Compute Oustaloup parameters
+#     K, poles, xeros = oustaloup_zeros_poles(q, N, wb, wh)
+    
+#     # Compute residues and pole dynamics coefficients (the p_i = ω_k >0 for v' = -p_i v + y)
+#     residues, _ = oustaloup_residues(K, poles, xeros)
+#     p_i = poles  # p_i = ω_k for the dynamics v' = -p_i v + y
+    
+#     M = length(poles)  # ... = 2N+1
+
+#     # Augmented state: x = [y, y', v1, ..., vM]
+#     x = [y0; yp0; zeros(M)]
+#     du = zeros(length(x))
+
+#     # State update function of angular velocity ̇ω at current time step
+#     function update(ω::Function, t::Float64)
+
+#         wdot = diffcd(ω, t)  # angular acceleration
+
+#         y =  x[1]
+#         dy = x[2]
+#         vs = @view x[3:end]
+        
+#         # Approximate D^q u 
+#         if (q==0.0) 
+#             approx_dq = wdot
+#         else
+#             approx_dq = K * wdot
+#             for i in 1:M
+#                 approx_dq += residues[i] * vs[i]
+#             end
+#         end
+        
+#         # "ordinary" state updates
+#         du[1] = dy
+#         du[2] = approx_dq - A * dy - B * y
+        
+#         # Auxiliary state updates
+#         for i in 1:M
+#             du[2 + i] = -p_i[i] * vs[i] + wdot
+#         end
+
+#         # Euler integration
+#         for i in 1:length(x)
+#             x[i] += du[i] * dt
+#         end
+
+#         return x[1]  # return cupula deflection
+    
+#     end
+
+#     # return closure
+#     return update 
+# end
+
+
+# Create closure to compute state update for fractional Steinhausen model 
+#       y'' + A y' + B Dq y = Dq u(t)
+# with fractional derivative Dq = d^q/dt^q, -1<q<1 (Landolt and Correia, 1980; Magin, 2005).
+#   q = 0.0 gives classical torsion pendulum model
+#   q > 0.0 gives phase advance πq/2 at all frequencies, 
+#           in particular q=1.0 turns velocity sensitivity into acceleration sensitivity.
+# Accurate enough in the specified frequency band (f0, f1) /Hz. Outside that all bets are off.
+# Construct the state update function and initialize state: 
+#       cupula_update = make_fractional_Steinhausen_stateUpdate_fcn(<params>)
+# Use the state update function to update state at ith timestep and return cupula deflection (rad):
+#       cupula_deflection = cupula_update(u_i)
+# Uses Oustaloup approximation to Dq over specified frequency band (f0,f1) in Hz.
+# Default order of approximation N=2 (M=2*N+1 = 5th order linear TF), use N up to 5 for better approx.
+# Augmented state includes auxiliary variables for the approximation.
+# Initial state is [y0, y'(0), 0, 0, ..., 0] (M zeros for auxiliary states).
+# Example usage
+        # q = -0.5  # fractional order
+        # w = 2.0  # frequency of input rad/s
+        # T = 12.0
+        # dt = DEFAULT_SIMULATION_DT
+        # t = 0:dt:T
+        # x = sin.(w .* t)  # input angular acceleration (rad/s)
+        # d = zeros(length(t))
+
+        # FSS_update = make_fractional_Steinhausen_stateUpdate_fcn(q, 0., 0.)
+
+        # for i in 1:length(t)
+        #     d[i] = FSS_update(x[i])
+        # end
+##
+function make_fractional_Steinhausen_stateUpdate_acceleration_fcn(
+    q::Float64, y0::Float64, yp0::Float64; 
+    dt::Float64=DEFAULT_SIMULATION_DT, f0::Float64=1e-2, f1::Float64=2e1)
+
+    # Fractional Steinhausen model: I.y'' + P.y' + K.Dq y = I.wdot, 
+    I = 2.0e-12   # coeff of q'', endolymph moment of inertia kg.m^2
+    P = 6.0e-11   # coeff of q', viscous damping N.m.s/rad 
+    G = 1.0e-10    # coeff of q, cupula stiffness N.m/rad 
+
+    # Update equation coeffs from model parameters
+    A = P/I
+    B = G/I
+ 
+    # convert frequency band from Hz to rad/s
+    wb = 2.0*pi*f0
+    wh = 2.0*pi*f1
+
+    # Approximation of order 2N+1 (so N=2 is 5th order)
+    N = 5
+    
+    # Compute Oustaloup parameters
+    K, poles, xeros = oustaloup_zeros_poles(q, N, wb, wh)
+    
+    # Compute residues and pole dynamics coefficients (the p_i = ω_k >0 for v' = -p_i v + y)
+    residues, _ = oustaloup_residues(K, poles, xeros)
+    p_i = poles  # p_i = ω_k for the dynamics v' = -p_i v + y
+    
+    M = length(poles)  # ... = 2N+1
+
+    # Augmented state: x = [y, y', v1, ..., vM]
+    x = [y0; yp0; zeros(M)]
+    du = zeros(length(x))
+
+    # State update function of angular acceleration ̇ω at current time step
+    function update(ωdot::Function, t::Float64)
+
+        wdot = ωdot(t)
+
+        y =  x[1]
+        dy = x[2]
+        vs = @view x[3:end]
+        
+        # Approximate D^q u 
+        if (q==0.0) 
+            approx_dq = wdot
+        else
+            approx_dq = K * wdot
+            for i in 1:M
+                approx_dq += residues[i] * vs[i]
+            end
+        end
+        
+        # "ordinary" state updates
+        du[1] = dy
+        du[2] = approx_dq - A * dy - B * y
+        
+        # Auxiliary state updates
+        for i in 1:M
+            du[2 + i] = -p_i[i] * vs[i] + wdot
+        end
+
+        # Euler integration
+        for i in 1:length(x)
+            x[i] += du[i] * dt
+        end
+
+        return x[1]  # return cupula deflection
+    
+    end
+
+    # return closure
+    return update
+end
+
     
 # Spike times of Exwald neuron with input proportional to cupula deflection (δ)
 # computed by fractional torsion pendulum model, δ'' + Aδ' + Bδ = Dq D w(t)
@@ -903,7 +1323,8 @@ function fractionalSteinhausenExwald_Neuron(q::Float64, EXW_param::Tuple{Float64
     #   results but probably this needs to be a neuron-specific number passed as an argument.
     #   see Landolt and Correia 1980
     G = 0.5
-    v(t) = v0 + G*cupula_update(wdot(t))
+    v(t) =  v0 + G*cupula_update(wdot(t))
+
 
     t = 0.0    # current time
     x = 0.0    # current location of drift-diffusion particle
@@ -942,6 +1363,79 @@ function fractionalSteinhausenExwald_Neuron(q::Float64, EXW_param::Tuple{Float64
     return spiketime
 end
 
+
+
+# return closure fsx(̇ω) that simulates fractional Steinhausen-Exwald neuron 
+# responding to head angular acceleration ̇ω(t) (NB blg() returns (ω, ̇ω))
+# returns 1.0 if the neuron spikes at time t, otherwise 0.0
+# nb must be called at fixed rate (interval dt) 
+function make_fractionalSteinhausenExwald_Neuron(q::Float64, EXW_param::Tuple{Float64, Float64, Float64},
+   dt::Float64=DEFAULT_SIMULATION_DT)
+
+    # extract Exwald parameters (for clarity)
+    (mu, lambda, tau) = EXW_param
+
+    # Parameters of drift-diffusion process time-to-barrier model corresponding to Wald component   
+    # v0 = spontaneous drift rate, s = noise amplitude (diffusion rate), barrier = barrier distance
+    (v0, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda)
+
+    # Trigger level for threshold-crossing times of N(v0,s) noise to be a Poisson process
+    # with mean interval tau.
+    trigger = TriggerThreshold_from_PoissonTau(v0, s, tau, dt)
+
+    # initial canal state
+    δ    = 0.0
+    δdot = 0.0
+
+    # instantiate and initialize torsion pendulum model 
+    cupula_update = make_fractional_Steinhausen_stateUpdate_fcn(q, δ, δdot)
+
+    # Gain G specifies input to Exwald neuron in response to head acceleration wdot
+    # TBD set gain parameter G to match firing rate gains (spikes/s per deg/s) to data
+    # for neuron with the specified dynamic parameters.  
+    # e.g. see Landolt and Correia 1980
+    G = 0.5
+    v(wdot) = v0 + G*cupula_update(wdot)
+
+    t = 0.0    # current time
+    x = 0.0    # current location of drift-diffusion particle
+    i = 0      # index for inserting spike times into spiketime vector
+
+    refractory = true
+
+    function fsx(wdot::Float64)
+
+        if refractory 
+            x += x = x + v(t) * dt + s * randn(1)[] * sqrt(dt)   # integrate noise
+            if x >= barrier
+                refractory = false
+                x -= barrier  # reset integral ready for next refractory period
+            end
+            return 0.0
+        else
+            if (v(t) + s * randn()[]) >= trigger 
+                refractory = true   # start new refractory period
+                return 1.0
+            else
+                return 0.0
+            end
+        end
+    end
+
+    return fsx  # return closure.  fsx(wdot) returns 1 if spike occurs 
+
+end
+
+# # intervals generated by fractional steinhausen Exwald neuron 
+# # responding to angular acceleration wdot(t) up to time T
+# # nb spike times = cumsum(intervals)
+# function fsx_intervals(fsx, wdot::Function, T::Float64, dt::Float64 = DEFAULT_SIMULATION_DT)
+
+#     t=0.0
+#     Δt = 0.0
+#     while t<T
+#         t + Δt
+#         if (fsx(wdot(t)))  
 
  
 # return vector of interval lengths in spike train at specified phase (0-360)
@@ -1235,27 +1729,55 @@ function Exwald_fromCVStar(CVStar::Float64, tbar::Float64)
 
 end
 
-# band-limited Gaussian noise by sum-of-sines
-#  f0:  lower band limit in Hz 
-#  f1:  upper band limit in Hz 
-#   s:  Gaussian amplitude s.d.
-#  dt:  sample interval
-#  Nseconds: Signal duration in seconds
+# construct closure function to generate band-limited Gaussian noise by sum-of-cosines
+#  flower, fupper:  frequency band /Hz 
+#   rms:  root mean squared noise amplitude 
+#  Nfreqs = number of cosines in sum, uniformly spaced in band
 #
-# Returns: (t, blg)  time vector and signal vector
+# Returns function blg(t) which returns state = (x(t), ̇x(t)) 
+#                                       i.e. noise value and its rate of change at t
 # 
-function BLG(f0::Float64, f1::Float64, s::Float64, dt::Float64, Nseconds)
+# usage: blgStruc = (flower, fupper, rms)
+#        blg = make_blg_generator(blgStruc, ...) # noise generating function with specified parameters
+#        blg(t)  # noise state at time t
+#  NB each blg() generates a particular noise waveform, so you can get the value and the 
+# derivative at time t by calling blg() twice, i.e. x_t = blg(t)[1], dx_t =  blg(t)[2]  
+function make_blg_generator(blgParams::Tuple{Float64, Float64, Float64}, Nfreqs::Int64=32)
 
-    t = collect(0.0:dt:Nseconds)
+    (flower, fupper, rms) = blgParams
 
-    bpfilter  = digitalfilter(Bandpass(f0, f1; fs = 1000.), Butterworth(2))
+    @assert flower > 0 && fupper > flower && Nfreqs>= 1  "Invalid specs for blg generator"    
+    
+    Δf = (fupper - flower) / Nfreqs
+    fs = flower .+ (0:Nfreqs-1) * Δf        # Linearly spaced frequencies
+    PSD = rms^2 / (fupper - flower)         # power spectral density
+    A = sqrt(2 * PSD * Δf) * randn(Nfreqs)  # Constant scaling * Gaussian amplitudes
+    phi = rand(Uniform(0, 2 * π), Nfreqs)   # Random phases
+        
+    function blg(t)
 
-    blg = filt(bpfilter, randn(size(t)))
-    blg = s*blg/std(blg)
+        x  = 0.0
+        dx = 0.0
+        for i in 1:Nfreqs
+            x += A[i]*cos(2π*fs[i]*t + phi[i])
+            dx += -2π*fs[i]*A[i]*sin(2π*fs[i]*t + phi[i])
+        end
 
-    (t, blg)
+        return (x,dx) # closure function returns noise state
+    end
+
+    return blg  # enclosing function returns closure 
+end
+
+# rms power of derivative of blg noise (needed for scaling state space maps)
+#  parameters = those used to construct the noise generating function
+function blg_derivative_RMS(blgParams)
+   
+    (flower, fupper, rms) = blgParams
+    sqrt( (4.0/3.0)*π^2*rms^2*(fupper^3-flower^3)/(fupper-flower) )
 
 end
+
 
 
 # Exwald model Bode gain and phase plots 
@@ -1584,16 +2106,19 @@ function diffcd(f::Function, t::Float64, dt::Float64=DEFAULT_SIMULATION_DT)
 
 end
 
-# # central difference differentiator
-# function diffcd(f::Function, t::Vector{Float64}, dt::Float64=DEFAULT_SIMULATION_DT)
+# central difference differentiator for vector of values
+function diffcd(v::Vector{Float64}, dt::Float64=DEFAULT_SIMULATION_DT)
 
-#     N = length(t)
-#     dx = zeros(Float64, length(t))
-#     for i in 1:N
-#         dx[i] = (f(t+dt) - f(t-dt))/(2*dt)
-#     end
-#     return dx
-# end
+    N = length(v)
+    dv = zeros(Float64, N)
+    dv[1] = (v[2]-v[1])/dt  # one-sided right derivative
+    for i in 2:(N-1)
+        dv[i] = (v[i+1] - v[i-1])/(2*dt)  # central
+    end
+    dv[N] = (v[N] - v[N-1])/dt  # one-sided left
+
+    return dv
+end
 
 
 

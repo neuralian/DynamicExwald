@@ -26,12 +26,15 @@
 # make Poisson spike train, listen and write to mp3
 # I = zeros(100);Exponential_sample(I, .1);st = cumsum(I); listen(st); spiketimes2mp3(st, "aspiketrain")
 
+#test_FractionalSteinhausenExwald_Neuron_phasedistribution(100000, .0, (.013, 1., .001), (40., 1.0), vec([45.0*i for i in 0:7]))
 
-
-
+# blgParams = (.001, 4.0, 5.0)
+# X = demo_blgStateMap(blgParams, .5, 128)
+# heatmap!(X[1])
 
 include("Neuralian.jl")
 include("NeuralianFit.jl")
+include("NeuralianBayesian.jl")
 #include("NeuralianPlot.jl")
 
 using Infiltrator, Colors
@@ -430,7 +433,7 @@ end
 # frequency f (Hz), maxw = peak angular velocity 
 # >>>>>>>NB stimulus amplitude is maximum angular displacement in degrees<<<
 #  because its easier to visualize the movement this way, e.g. wobbles +-10 deg at 1Hz
-function demo_Fractional_Steinhausen_Exwald_Neuron_sin(
+function deprecated_demo_Fractional_Steinhausen_Exwald_Neuron_sin(
         q::Float64, EXWparam::Tuple{Float64,Float64,Float64}, 
         f::Float64, maxw::Float64, T::Float64, dt::Float64=DEFAULT_SIMULATION_DT)
 
@@ -499,31 +502,37 @@ function demo_Fractional_Steinhausen_Exwald_Neuron_sin(
     return (spt, collect(tr), r, w_tr, wdot_tr)
 end
 
-# demo Steinhausen-Exwald neuron with sinusoidal stimulus
-# frequency f (Hz), maxAngle = maximum angular displacement (degrees)
-# >>>>>>>NB stimulus amplitude is maximum angular displacement in degrees<<<
-#  because its easier to visualize the movement this way, e.g. wobbles +-10 deg at 1Hz
-function demo_Steinhausen_Exwald_Neuron_sin(T::Float64, 
-    Exwald_param::Tuple{Float64,Float64,Float64}, 
-    f::Float64, peakAngularVelocity::Float64, dt::Float64=DEFAULT_SIMULATION_DT)
+# demo dynamic Steinhausen-Exwald neuron with sinusoidal stimulus
+# frequency f (Hz), maxw = peak angular velocity 
+function demo_Fractional_Steinhausen_Exwald_Neuron_sin(
+        q::Float64, EXWparam::Tuple{Float64,Float64,Float64}, 
+        f::Float64, maxw::Float64, T::Float64, dt::Float64=DEFAULT_SIMULATION_DT)
 
-    # stimulus amplitude, convert from degrees max displacement to radians/s^2 angular acceleration
-    #A = maxAngle * (π/180.0)*4.0*π^2*f^2   # convert to radians
+    # fractional torsion pendulum
+    # default bandwidth of fractional approximation is .01-20.0 Hz
+    # iniitalized in state (0.0,0.0)
+    fpt = make_fractional_Steinhausen_stateUpdate_velocity_fcn(q, 0.0, 0.0)
 
-    # # extract parameters of Exwald model
-    # (mu, lambda, tau) = Exwald_param
-    # (v, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda)   # Drift speed, noise s.d. & barrier height for Wald component
-    # trigger = TriggerThreshold_from_PoissonTau(v, s, tau, dt)            # threshold for Poisson component using same noise
+    # Exwald neuron
+    xneuron = make_Exwald_neuron(EXWparam)
 
-    # angular acceleration at time t
-    wdot  = t->2π*f*peakAngularVelocity*cos(2π * f * t)
+    # angular velocity
+    w = t -> maxw*sin(2π*f*t)
 
-    # simulate Steinhausen-Exwald neuron
-    spt = Steinhausen_Exwald_Neuron(T, Exwald_param, wdot)
 
-   # Gaussian rate estimatede
-   gdt = 1.0e-3                      # sample interval for GLR estimate
-   (tr, r) = GLR(spt, [0.05], gdt)       # rate estimate r at sample times t
+    # NB1: fpt(w,t) returns updated cupula deflection δ given angular velocity w at time t, 
+    #      from fractional torsion pendulum model.  It maintains internal state (δ, δ').
+    # NB2: fpt(w,t) updates the state from t-dt to t, it doesn't give state at arbitrary t.
+
+    # simulate spike train 
+    #spt = fractionalSteinhausenExwald_Neuron(q, EXWparam, w, T)
+    spt = spiketimes(xneuron, t->fpt(w, t), T)
+
+   # Gaussian rate estimate
+   # Matched filter for stimulus frequecy
+   gdt = 1.0e-3                       # sample interval for GLR estimate
+   s = 1.0/(2π*f);                    # kernel matched to stimulus period
+   (tr, r) = GLR(spt, [s], gdt)       # rate estimate r at sample times t
 
     #@infiltrate
 
@@ -543,29 +552,110 @@ function demo_Steinhausen_Exwald_Neuron_sin(T::Float64,
     # plot rate estimate 
     lines!(tr, r, linewidth=2.5, color = :blue)
 
-    # angular velocity and acceleration at GLR sample times
-    w_tr =  [-2.0*π*f*A*cos(2.0*π*f*tt) for tt in tr]
-    wdot_tr = [wdot(tt) for tt in tr]
+    # plot angular velocity and acceleration 
+    w_tr =  w.(tr)
+    wdot_tr = diffcd.(w, tr)
 
     # scale factor to match stimulus amplitude to response amplitude on plot
     # (because we want to visually compare phase angles & don't care about amplitudes)
-    Scale = var(r)/var(wdot_tr)
-    println(Scale)
+    Scale = sqrt(var(r)/var(wdot_tr))
+    #print("Hello:"); println(Scale)
 
     # plot angular acceleration stimulus
-    lines!(tr, Scale*wdot_tr, color = :salmon1, linewidth = 2.5)
+    lines!(tr, sqrt(var(r)/var(wdot_tr))*wdot_tr, color = :salmon1, linewidth = 2.5)
 
      # plot angular velocity stimlus
-    lines!(tr, Scale*w_tr, color = :green, linewidth = 2.5)   
+    lines!(tr, sqrt(var(r)/var(w_tr))*w_tr, color = :green, linewidth = 2.5)    
 
     xlims!(0.0, tr[end])
-    ax.title = "Steinhausen-Exwald Neuron Model "
+    ax.title = "Fractional Steinhausen-Exwald Neuron "
     display(Fig)
 
-    println("spt: ", spt)
     # return spike times, rate sample times, rate (at sample times), 
     # angular velocity and acceleration (at sample times)
-    return (spt, tr, r, w_tr, wdot_tr)
+    return (spt, collect(tr), r, w_tr, wdot_tr)
+end
+
+
+# demo dynamic Steinhausen-Exwald neuron with sinusoidal stimulus
+# frequency f (Hz), maxw = peak angular velocity 
+function demo_Fractional_Steinhausen_Exwald_Neuron_blg(
+        q::Float64, EXWparam::Tuple{Float64,Float64,Float64}, 
+        BLGparam::Tuple{Float64, Float64, Float64}, T::Float64, dt::Float64=DEFAULT_SIMULATION_DT)
+
+    # fractional torsion pendulum
+    # default bandwidth of fractional approximation is .01-20.0 Hz
+    # iniitalized in state (0.0,0.0)
+    fpta = make_fractional_Steinhausen_stateUpdate_acceleration_fcn(q, 0.0, 0.0)
+
+    # Exwald neuron
+    xneuron = make_Exwald_neuron(EXWparam)
+
+    # blg angular velocity
+    w = make_blg_generator(BLGparam, 16)
+
+    # cupula deflection function(al) of angular velocity 
+    # w() returns (ω, ω') but fpt() wants a function of ω' so we use t-> w(t)[1]
+    δ = t-> fpta(t->w(t)[2], t)[1]
+
+
+    # NB1: fpt(w,t) returns updated cupula deflection δ given angular velocity w at time t, 
+    #      from fractional torsion pendulum model.  It maintains internal state (δ, δ').
+    # NB2: fpt(w,t) updates the state from t-dt to t, it doesn't give state at arbitrary t.
+
+    # simulate spike train 
+    (spt, velocity)  = spiketimes(xneuron, δ, T)
+
+   # Gaussian rate estimate
+   # Matched filter for stimulus frequecy
+   gdt = 1.0e-3                       # sample interval for GLR estimate
+   s = 1.0/(2π*BLGparam[2]);          # kernel matched to upper band limit
+   (tr, r) = GLR(spt, [s], gdt)       # rate estimate r at sample times t
+
+    #@infiltrate
+
+    # # # compute expected mean rate (1/mean interval) during stimulus
+    # cupulaModel = create_cupula_state_update()
+    # Gain = 10000.0  # spikes per second per radian deflection
+    # timevarying_τ = [PoissonTau_from_ThresholdTrigger(v.+Gain*cupulaModel(stimulus(tt))[2], s, trigger, DEFAULT_SIMULATION_DT) for tt in tr]
+    # timevarying_μ = [Wald_parameters_from_FirstpassageTimeModel(v.+Gain*cupulaModel(stimulus(tt))[2], s, barrier)[1] for tt in tr]
+    # timevarying_rate = 1.0./(timevarying_μ+timevarying_τ)
+
+    Fig = Figure(size=(1800, 400))
+    ax = Axis(Fig[1,1])
+
+    # plot spike train
+    splot!(ax, spt, 20.)
+
+    # plot rate estimate 
+    lines!(tr, r, linewidth=2.5, color = :blue)
+
+    #
+
+    # plot angular velocity and acceleration 
+    tw = 0.0:dt:T
+    acceleration = diffcd(velocity, dt)
+    # w_tr =  w.(tr)
+    # wdot_tr = diffcd.(w, tr)
+
+    # scale factor to match stimulus amplitude to response amplitude on plot
+    # (because we want to visually compare phase angles & don't care about amplitudes)
+    Scale = sqrt(var(r)/var(acceleration))
+    #print("Hello:"); println(Scale)
+
+    # # plot angular acceleration 
+    lines!(tw, sqrt(var(r)/var(acceleration))*acceleration, color = :salmon1, linewidth = 2.5)
+
+    # plot angular velocity 
+    lines!(tw, sqrt(var(r)/var(velocity))*velocity, color = :green, linewidth = 2.5)    
+
+    xlims!(0.0, T)
+    ax.title = "Fractional Steinhausen-Exwald Neuron "
+    display(Fig)
+
+    # return spike times, rate sample times, rate (at sample times), 
+    # angular velocity and acceleration (at sample times)
+    return (spt, collect(tr), r, velocity, acceleration)
 end
 
 # Plot ISI distribution for Exwald neuron at specified phases of sinusoidal stimulus
@@ -577,7 +667,7 @@ end
 # Example call:
 #  test_Exwald_Neuron_phasedistribution(500000, xwp, (.25, 1.0), vec([45.0*i for i in 0:7]))
 function test_Exwald_Neuron_phasedistribution(N::Int64,
-    Exw_param::Tuple{Float64,Float64,Float64},
+    EXW_param::Tuple{Float64,Float64,Float64},
     Stim_param::Tuple{Float64,Float64},
     phaseAngle::Vector{Float64},
     dt::Float64=DEFAULT_SIMULATION_DT)
@@ -779,36 +869,36 @@ function test_Exwald_Neuron_phasedistribution(N::Int64,
 
 end
 
-
 # Plot ISI distribution for Exwald neuron at specified phases of sinusoidal stimulus
 # overlay the model-predicted Exwald for each phase
 #   0 <= phase <= 360
 # N = number of spikes 
-# Exwald_param = (mu, lambda, tau)
+# EXW_param = (mu, lambda, tau)
 # Stim_param = (amplitude, frequency /Schwarz)
 # Example call:
 #  test_Exwald_Neuron_phasedistribution(500000, xwp, (.25, 1.0), vec([45.0*i for i in 0:7]))
-function test_FractionalSteinhausenExwald_Neuron_phasedistribution(T::Float64, q::Float64, 
-    Exwald_param::Tuple{Float64,Float64,Float64},
+function test_FractionalSteinhausenExwald_Neuron_phasedistribution(N::Int64, q::Float64, 
+    EXW_param::Tuple{Float64,Float64,Float64},
     Stim_param::Tuple{Float64,Float64},
     phaseAngle::Vector{Float64},
     dt::Float64=DEFAULT_SIMULATION_DT)
 
     # extract parameters
-    (mu, lambda, tau) = Exwald_param
+    (mu, lambda, tau) = EXW_param
     (A, F) = Stim_param
     (v0, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda)   # Drift speed, noise s.d. & barrier height for Wald component
     trigger = TriggerThreshold_from_PoissonTau(v0, s, tau, dt)            # threshold for Poisson component using same noise
 
-    # sinusoidal stimulus
-    stimulus(t) = A * sin(2 * π * F * t)
+    # head angular velocity
+    w = t -> A * sin(2 * π * F * t)
 
-    # simulate Exwald neuron
-    spt = fractionalSteinhausenExwald_Neuron(q, (mu, lambda, tau), stimulus, T)
+    # N spikes from Exwald neuron by simulation
+    spt = fractionalSteinhausenExwald_Neuron(q, (mu, lambda, tau), w, N)
 
     # rate estimate
     dt4glr = 0.01
-    (tx, glrate) = GLR(spt, [0.1], dt4glr);
+    bandwidth = 0.1
+    (tr, firingrate) = GLR(spt, [bandwidth], dt4glr);
 
     Npts = 128
     R0 = 1.0
@@ -822,13 +912,13 @@ function test_FractionalSteinhausenExwald_Neuron_phasedistribution(T::Float64, q
     xlims!(ax0, 0., 1.)
     ylims!(ax0, 0., 1.)
     text!(ax0, .01, .95, fontsize = 24,
-    text = "Fractional Steinhausen-Exwald neuron ISI distribution during sinusoidal angular acceleration")
-    text!(ax0, .5, .73, fontsize = 10, align = (:center, :center), text = "Peak acceleration")
+    text = "Fractional Steinhausen-Exwald neuron ISI distributions during sinusoidal head movement")
+    text!(ax0, .5, .755, fontsize = 16, align = (:center, :center), text = "Peak Velocity")
     text!(ax0, .05, .92, fontsize = 16, text = "Model Parameters:")
     h0 = .9
     dh = .02
     text!(ax0, .06, h0, fontsize = 16, 
-        text = @sprintf "(q, μ, λ, τ) = ( %0.4f, %0.4f,  %0.4f,  %0.4f)" q mu lambda tau)
+        text = @sprintf "(q, μ, λ, τ) = ( %0.2f, %0.3f,  %0.3f,  %0.3f)" q mu lambda tau)
     # text!(ax0, .125, h0-dh, fontsize = 16, text = @sprintf "λ = %0.4f" lambda)    
     # text!(ax0, .125, h0-2*dh, fontsize = 16, text = @sprintf "τ = %0.4f" tau)
     text!(ax0, .06, h0-dh, fontsize = 16, 
@@ -842,14 +932,14 @@ function test_FractionalSteinhausenExwald_Neuron_phasedistribution(T::Float64, q
     hidedecorations!(ax0)
 
     # ax1 shows stimulus, spike train and rate
-    ax1 = Axis(Fig[1, NP+2], title = "Stimulus & spikes during one cycle")
+    ax1 = Axis(Fig[1, NP+2], title = "Response to 1 cycle head angular velocity")
     xlims!(ax1, 0., 1.0/F)
     ax1.xticks = vec([-1])
     ax1_width = 0.75*FigRadius
     ax1_height = ax1_width/(1.0+sqrt(5))
     period = 1.0/F
-    t1 = collect(0.0:dt4glr:period)
-    lines!(ax1, t1, [stimulus(t) for t in t1], color = :black, linewidth = 1.0)   # plot 1 cycle of stimulus
+   # t1 = collect(0.0:dt4glr:period)
+    lines!(ax1, tr, [w(t) for t in tr], color = :black, linewidth = 1.0)   # plot 1 cycle of stimulus
     display(Fig)  # to compute axis limits
     splot!(ax1, spt[minimum(findall(spt.>period)):maximum(findall(spt.<2.0*period))] .- period,
           ylims(ax1)[2]/4.0, 1.0, :navyblue)   
@@ -861,9 +951,10 @@ function test_FractionalSteinhausenExwald_Neuron_phasedistribution(T::Float64, q
 
     ns = Int(period/dt4glr)  # number of glr samples in period
     averageRate = zeros(ns+1)
+    t1 = (0:ns)*dt4glr
     for i in 2:Nperiods
-        averageRate = averageRate + glrate[((i-1)*ns).+(0:ns)]
-        lines!(ax2, t1, glrate[((i-1)*ns).+(0:ns)], linewidth = 0.5)
+        averageRate = averageRate + firingrate[((i-1)*ns).+(0:ns)]
+        lines!(ax2, t1, firingrate[((i-1)*ns).+(0:ns)], linewidth = 0.5)
     end
     lines!(ax2, t1, averageRate./Nperiods, linewidth = 4.0, color = :white)
     lines!(ax2, t1, averageRate./Nperiods, linewidth = 2.0, color = :black)
@@ -877,6 +968,7 @@ function test_FractionalSteinhausenExwald_Neuron_phasedistribution(T::Float64, q
     y0 = zeros(NP)   
     xbig = -99.0   # for computing the x-axis limit, = 2x largest mean of fitted models in cycle
     fitted_param = zeros(3, NP)   # holds fitted Exwald parameters in columns
+    maxy = -999.0
     for i in 1:NP
 
         phaseRadians = -phaseAngle[i] * pi / 180.0
@@ -892,10 +984,16 @@ function test_FractionalSteinhausenExwald_Neuron_phasedistribution(T::Float64, q
         T = maximum(I0)
         t = collect(0.0:dt:T)
 
-        # predicted Distributions
-        v = v0 + stimulus(phaseAngle[i] / (360.0 * F)) # stimulus at phaseAngle[i]
-        (mu_model, lambda_model) = Wald_parameters_from_FirstpassageTimeModel(v, s, barrier)
-        tau_model = PoissonTau_from_ThresholdTrigger(v, s, trigger, dt)
+        # predicted Distribution
+        v = v0 + w(2π*phaseAngle[i] / 360.0) # stimulus at phaseAngle[i]
+        (mu0, lambda0) = Wald_parameters_from_FirstpassageTimeModel(v, s, barrier)
+        tau0 = PoissonTau_from_ThresholdTrigger(v, s, trigger, dt)
+        if (tau0==Inf) 
+            tau0 = .1
+        end
+   
+
+
 
         # X = Exwaldpdf(mu_model, lambda_model, tau_model, t)
         # W = pdf(InverseGaussian(mu_model, lambda_model), t)
@@ -906,16 +1004,20 @@ function test_FractionalSteinhausenExwald_Neuron_phasedistribution(T::Float64, q
         H = hist!(I0, bins=128, normalization=:pdf)
 
         # fit Exwald Model
-        (maxf, fitted_param[:,i], ret) = Fit_Exwald_to_ISI(I0, [mu_model, lambda_model, tau_model])
+        (maxf, fitted_param[:,i], ret) = Fit_Exwald_to_ISI(I0, [mu0, lambda0, tau0])
 
         thisbig = fitted_param[1,i] + fitted_param[3,i]   # mean = mu + tau
         if thisbig > xbig
             xbig = thisbig
         end
 
-        lines!(ax[i], t,  
-            Exwaldpdf(fitted_param[1,i], fitted_param[2,i], fitted_param[3,i], t), 
-            color = :salmon1, linewidth = 2.0)
+        # fit and display pdf
+        fittedPDF = Exwaldpdf(fitted_param[1,i], fitted_param[2,i], fitted_param[3,i], t)
+        maxy = maximum(fittedPDF)
+        lines!(ax[i], t,  fittedPDF, color = :salmon1, linewidth = 2.0)
+          #  xlims!(0, .2)
+
+          #@infiltrate
         
         # set axis limits and remove ticks
         # display(Fig)
@@ -939,18 +1041,24 @@ function test_FractionalSteinhausenExwald_Neuron_phasedistribution(T::Float64, q
         ymax = max(ymax, ylims(ax[i])[2])
     end
 
+    xbig = min(.25, xbig)  # need this when fit ExwaldPDF fails TBD ensure it doesnt fail
+
     xbig = 3.0*round(100.0*xbig)/100.0
-    # if xbig<.1
-    #     xbig = 2.0*round(100.0*xbig)/100.0
-    # end
-    # if xbig < .01  # don't expect this to happen. 
-    #     xbig = .01
-    # end
+    if xbig<.1
+        xbig = 2.0*round(100.0*xbig)/100.0
+    end
+    if xbig < .01  # don't expect this to happen. 
+        xbig = .01
+    end
+
+    #@infiltrate
+    xbig = 0.1
+    ymax = 300.
     for i in 1:NP
         xlims!(ax[i], 0.0, xbig) #xmax)
-        ax[i].xticks = vec([-1])
-        ylims!(ax[i], 0.0, ymax)
-        ax[i].yticks = vec([-1])
+        ax[i].xticks = vec([xbig])
+        ylims!(ax[i], 0.0, 300.)
+        ax[i].yticks = vec([200.])
     end
 
     # show fitted parameters
@@ -982,7 +1090,7 @@ function test_FractionalSteinhausenExwald_Neuron_phasedistribution(T::Float64, q
 
     display(Fig)
 
-    save("Exwald_Neuron_PhaseISI.png", Fig)
+    save("FractionalSteinhausenExwald_Neuron_PhaseISI.png", Fig)
 
    Fig
 
@@ -993,31 +1101,43 @@ end
 # overlay the model-predicted Exwald for each phase
 #   0 <= phase <= 360
 # N = number of spikes 
-# Exwald_param = (mu, lambda, tau)
+# EXW_param = (mu, lambda, tau)
 # Stim_param = (amplitude, frequency /Schwarz)
 # Example call:
 #  test_Exwald_Neuron_phasedistribution(500000, xwp, (.25, 1.0), vec([45.0*i for i in 0:7]))
-function test_FractionalSteinhausenExwald_Neuron_phasedistribution(N::Int64, q::Float64, 
-    Exwald_param::Tuple{Float64,Float64,Float64},
+function demo_FractionalSteinhausenExwald_Neuron_phasedistribution(N::Int64, q::Float64, 
+    EXW_param::Tuple{Float64,Float64,Float64},
     Stim_param::Tuple{Float64,Float64},
     phaseAngle::Vector{Float64},
     dt::Float64=DEFAULT_SIMULATION_DT)
 
     # extract parameters
-    (mu, lambda, tau) = Exwald_param
+    (mu, lambda, tau) = EXW_param
     (A, F) = Stim_param
     (v0, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda)   # Drift speed, noise s.d. & barrier height for Wald component
     trigger = TriggerThreshold_from_PoissonTau(v0, s, tau, dt)            # threshold for Poisson component using same noise
 
-    # sinusoidal stimulus
-    stimulus(t) = A * sin(2 * π * F * t)
+    # fractional torsion pendulum
+    # default bandwidth of fractional approximation is .01-20.0 Hz
+    # iniitalized in state (0.0,0.0)
+    fpt = make_fractional_Steinhausen_stateUpdate_fcn(q, 0.0, 0.0)
 
-    # simulate Exwald neuron
-    spt = fractionalSteinhausenExwald_Neuron(q, (mu, lambda, tau), stimulus, N)
+    # Exwald neuron
+    xneuron = make_Exwald_neuron(EXWparam)
+
+    # angular velocity function of time
+    w = t -> A*sin(2π*F*t)
+
+    # N Exwald intervals by simulation
+    ISI = interspike_intervals(xneuron, t->fpt(w, t), N)
+
+    # spike times 
+    spt = cumsum(ISI)
 
     # rate estimate
     dt4glr = 0.01
-    (tx, glrate) = GLR(spt, [0.1], dt4glr);
+    bandwidth = 0.1
+    (tr, firingrate) = GLR(spt, [bandwidth], dt4glr);
 
     Npts = 128
     R0 = 1.0
@@ -1031,13 +1151,13 @@ function test_FractionalSteinhausenExwald_Neuron_phasedistribution(N::Int64, q::
     xlims!(ax0, 0., 1.)
     ylims!(ax0, 0., 1.)
     text!(ax0, .01, .95, fontsize = 24,
-    text = "Fractional Steinhausen-Exwald neuron ISI distribution during sinusoidal angular acceleration")
-    text!(ax0, .5, .73, fontsize = 10, align = (:center, :center), text = "Peak acceleration")
+    text = "Fractional Steinhausen-Exwald neuron ISI distributions during sinusoidal head movement")
+    text!(ax0, .5, .755, fontsize = 16, align = (:center, :center), text = "Peak Velocity")
     text!(ax0, .05, .92, fontsize = 16, text = "Model Parameters:")
     h0 = .9
     dh = .02
     text!(ax0, .06, h0, fontsize = 16, 
-        text = @sprintf "(q, μ, λ, τ) = ( %0.4f, %0.4f,  %0.4f,  %0.4f)" q mu lambda tau)
+        text = @sprintf "(q, μ, λ, τ) = ( %0.2f, %0.3f,  %0.3f,  %0.3f)" q mu lambda tau)
     # text!(ax0, .125, h0-dh, fontsize = 16, text = @sprintf "λ = %0.4f" lambda)    
     # text!(ax0, .125, h0-2*dh, fontsize = 16, text = @sprintf "τ = %0.4f" tau)
     text!(ax0, .06, h0-dh, fontsize = 16, 
@@ -1051,14 +1171,14 @@ function test_FractionalSteinhausenExwald_Neuron_phasedistribution(N::Int64, q::
     hidedecorations!(ax0)
 
     # ax1 shows stimulus, spike train and rate
-    ax1 = Axis(Fig[1, NP+2], title = "Stimulus & spikes during one cycle")
+    ax1 = Axis(Fig[1, NP+2], title = "Response to 1 cycle head angular velocity")
     xlims!(ax1, 0., 1.0/F)
     ax1.xticks = vec([-1])
     ax1_width = 0.75*FigRadius
     ax1_height = ax1_width/(1.0+sqrt(5))
     period = 1.0/F
-    t1 = collect(0.0:dt4glr:period)
-    lines!(ax1, t1, [stimulus(t) for t in t1], color = :black, linewidth = 1.0)   # plot 1 cycle of stimulus
+   # t1 = collect(0.0:dt4glr:period)
+    lines!(ax1, tr, [w(t) for t in tr], color = :black, linewidth = 1.0)   # plot 1 cycle of stimulus
     display(Fig)  # to compute axis limits
     splot!(ax1, spt[minimum(findall(spt.>period)):maximum(findall(spt.<2.0*period))] .- period,
           ylims(ax1)[2]/4.0, 1.0, :navyblue)   
@@ -1070,9 +1190,10 @@ function test_FractionalSteinhausenExwald_Neuron_phasedistribution(N::Int64, q::
 
     ns = Int(period/dt4glr)  # number of glr samples in period
     averageRate = zeros(ns+1)
+    t1 = (0:ns)*dt4glr
     for i in 2:Nperiods
-        averageRate = averageRate + glrate[((i-1)*ns).+(0:ns)]
-        lines!(ax2, t1, glrate[((i-1)*ns).+(0:ns)], linewidth = 0.5)
+        averageRate = averageRate + firingrate[((i-1)*ns).+(0:ns)]
+        lines!(ax2, t1, firingrate[((i-1)*ns).+(0:ns)], linewidth = 0.5)
     end
     lines!(ax2, t1, averageRate./Nperiods, linewidth = 4.0, color = :white)
     lines!(ax2, t1, averageRate./Nperiods, linewidth = 2.0, color = :black)
@@ -1086,6 +1207,7 @@ function test_FractionalSteinhausenExwald_Neuron_phasedistribution(N::Int64, q::
     y0 = zeros(NP)   
     xbig = -99.0   # for computing the x-axis limit, = 2x largest mean of fitted models in cycle
     fitted_param = zeros(3, NP)   # holds fitted Exwald parameters in columns
+    maxy = -999.0
     for i in 1:NP
 
         phaseRadians = -phaseAngle[i] * pi / 180.0
@@ -1101,10 +1223,16 @@ function test_FractionalSteinhausenExwald_Neuron_phasedistribution(N::Int64, q::
         T = maximum(I0)
         t = collect(0.0:dt:T)
 
-        # predicted Distributions
-        v = v0 + stimulus(phaseAngle[i] / (360.0 * F)) # stimulus at phaseAngle[i]
-        (mu_model, lambda_model) = Wald_parameters_from_FirstpassageTimeModel(v, s, barrier)
-        tau_model = PoissonTau_from_ThresholdTrigger(v, s, trigger, dt)
+        # predicted Distribution
+        v = v0 + w(2π*phaseAngle[i] / 360.0) # stimulus at phaseAngle[i]
+        (mu0, lambda0) = Wald_parameters_from_FirstpassageTimeModel(v, s, barrier)
+        tau0 = PoissonTau_from_ThresholdTrigger(v, s, trigger, dt)
+        if (tau0==Inf) 
+            tau0 = .1
+        end
+   
+
+
 
         # X = Exwaldpdf(mu_model, lambda_model, tau_model, t)
         # W = pdf(InverseGaussian(mu_model, lambda_model), t)
@@ -1115,17 +1243,20 @@ function test_FractionalSteinhausenExwald_Neuron_phasedistribution(N::Int64, q::
         H = hist!(I0, bins=128, normalization=:pdf)
 
         # fit Exwald Model
-        (maxf, fitted_param[:,i], ret) = Fit_Exwald_to_ISI(I0, [mu_model, lambda_model, tau_model])
+        (maxf, fitted_param[:,i], ret) = Fit_Exwald_to_ISI(I0, [mu0, lambda0, tau0])
 
         thisbig = fitted_param[1,i] + fitted_param[3,i]   # mean = mu + tau
         if thisbig > xbig
             xbig = thisbig
         end
 
-        lines!(ax[i], t,  
-            Exwaldpdf(fitted_param[1,i], fitted_param[2,i], fitted_param[3,i], t), 
-            color = :salmon1, linewidth = 2.0)
+        # fit and display pdf
+        fittedPDF = Exwaldpdf(fitted_param[1,i], fitted_param[2,i], fitted_param[3,i], t)
+        maxy = maximum(fittedPDF)
+        lines!(ax[i], t,  fittedPDF, color = :salmon1, linewidth = 2.0)
           #  xlims!(0, .2)
+
+          #@infiltrate
         
         # set axis limits and remove ticks
         # display(Fig)
@@ -1149,18 +1280,24 @@ function test_FractionalSteinhausenExwald_Neuron_phasedistribution(N::Int64, q::
         ymax = max(ymax, ylims(ax[i])[2])
     end
 
+    xbig = min(.25, xbig)  # need this when fit ExwaldPDF fails TBD ensure it doesnt fail
+
     xbig = 3.0*round(100.0*xbig)/100.0
-    # if xbig<.1
-    #     xbig = 2.0*round(100.0*xbig)/100.0
-    # end
-    # if xbig < .01  # don't expect this to happen. 
-    #     xbig = .01
-    # end
+    if xbig<.1
+        xbig = 2.0*round(100.0*xbig)/100.0
+    end
+    if xbig < .01  # don't expect this to happen. 
+        xbig = .01
+    end
+
+    #@infiltrate
+    xbig = 0.1
+    ymax = 300.
     for i in 1:NP
         xlims!(ax[i], 0.0, xbig) #xmax)
-        ax[i].xticks = vec([-1])
-        ylims!(ax[i], 0.0, ymax)
-        ax[i].yticks = vec([-1])
+        ax[i].xticks = vec([xbig])
+        ylims!(ax[i], 0.0, 300.)
+        ax[i].yticks = vec([200.])
     end
 
     # show fitted parameters
@@ -1314,243 +1451,79 @@ function test_fit_Exwald_neuron_stationary(N::Int64, mu::Float64, lambda::Float6
 
 end
 
+# build a 2D histogram (map) of states (ω, ̇ω) visited by BLG stimulus
+# returns the map as a matrix, visualize it using heatmap!() 
+function demo_blgStateMap(blgParams::Tuple{Float64, Float64, Float64}, Δω::Float64 = 1.0, Nrep::Int64=4)
+
+    stateMap = init_stateMap(blgParams, Δω)
+
+    dt = .001
+    T  = 1.0/blgParams[1]    # blg period
 
 
-#= 
-# Extract ISI distribution for Exwald model neuron at specified phases of sinusoidal stimulus
-# fit Exwald models to ISI data
-# Plot estimated Exwald parameters vs instantaneous model parameters at fitAngles
-#   0 <= phase <= 360
-# eg call  test_fit_Exwald_Neuron_phasedistribution(50000, (.013, .1, .01), (1.0, 2.0), collect(0.0:45.0:360.));
-function test_fit_Exwald_Neuron_phasedistribution(N::Int64,
-    Exwald_param::Tuple{Float64,Float64,Float64},
-    Stim_param::Tuple{Float64,Float64},
-    phaseAngle::Vector{Float64}, fitAngle::Vector{Float64}=phaseAngle,
-    endAtclosestSpike::Bool = false,
-    dt::Float64=DEFAULT_SIMULATION_DT)
 
-    # extract parameters
-    (mu, lambda, tau) = Exwald_param
-    (A, F) = Stim_param
-    (v0, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda)   # Drift speed, noise s.d. & barrier height for Wald component
-    trigger = TriggerThreshold_from_PoissonTau(v0, s, tau, dt)            # threshold for Poisson component using same noise
-
-    # sinusoidal stimulus
-    stimulus(t) = A * sin(2 * π * F * t)
-    #stimulus(t) = A * sign(sin(2 * π * F * t))    
-    # function stimulus(t)
-        
-    #     if sin(2 * π * F * t)^2 > 0.5
-    #         return A*sign(sin(2 * π * F * t))
-    #     else
-    #         return(0.0)
-    #     end
-    # end
-    
-    Nphases = length(phaseAngle)
-
-    # layout plot window
-    # top row for histograms, bottom row for parameter fits
-    lyt = @layout [
-        grid(1,Nphases){.25h}
-        grid(3,1) 
-    ]
-    
-    Npts = 128
-    R0 = 1.0
-    plt = plot(layout = lyt,
-        size=(1200, 1200), bgcolor=:white, gridcolor=:white, showaxis=false)
-    ytickfontcolor = :white
-    xtickfontcolor = :white
-
-#     @infiltrate
-
-
-    # R = 0.35 #  plot circle radius relative to width of parent axes
-    # spi = 1  # subplot index counter
-
-
-    # Extract interval lengths at specified phases of stimulus
-
-    y_inset_offset = 0.05
-    x_inset_offset = 0.05
-    inset_h = (1.0-2.0*y_inset_offset)/Nphases
-    inset_w = 0.2
-
-    # arrays to hold fitted parameters
-
-    mu_hat = zeros(Nphases)
-    lambda_hat = zeros(Nphases)
-    tau_hat = zeros(Nphases)
-
-    # timescale for model evaluation (time delay from last spike)
-    Td = 5.0*(mu+tau)
-    td = collect(0.0:dt:Td)
-
-
-    # simulate Exwald neuron
-    spt = Exwald_Neuron(N, (mu, lambda, tau), stimulus)
-
-    #@infiltrate
-
-    for i in 1:Nphases
-
-       # phaseRadians = -phaseAngle[i] * pi / 180.0
-
-
-        # intervals at ith phase angle
-        ISI_i = intervalPhase_independent(spt, phaseAngle[i], F)
-
-        # fit model
-        (maxf, p, ret) = Fit_Exwald_to_ISI(ISI_i, [0.5, 0.5, 0.5])
-
-        mu_hat[i]     = p[1]
-        lambda_hat[i] = p[2]
-        tau_hat[i]    = p[3]
-
-        # drift parameter of physical model
-        v = v0 + stimulus(phaseAngle[i] / (360.0 * F))   # drift speed is spontaneous + stimulus-driven
-
-        # Exwald model parameters from physical model parameters
-        (mu_model, lambda_model) = Wald_parameters_from_FirstpassageTimeModel(v, s, barrier)
-        tau_model = PoissonTau_from_ThresholdTrigger(v, s, trigger, dt)
-
-
-        
-        # evaluate "true" Exwald model pdf and its Ex- and -Wald components
-        Exwald_model   = Exwaldpdf(mu_model, lambda_model, tau_model, td)
-        Wald_model     = pdf(InverseGaussian(mu_model, lambda_model), td)
-        Poisson_model  = exp.(-td ./ tau_model) ./ tau_model
-
-        # fitted model
-        Exwald_fitted = Exwaldpdf(mu_hat[i], lambda_hat[i],  tau_hat[i], td)
-
-        #@infiltrate
-
-        lw = 2.0
-#
-        H = histogram!(ISI_i, bins=0:1.0e-3:Td,
-            normalize=:pdf, subplot=i, 
-            linewidth=0.1, framestyle=:box,
-            xticks=[0.02], xtickfontcolor=xtickfontcolor, xtickdirection=:out,
-            yticks=[250.0], ytickfontcolor=ytickfontcolor, ytickdirection=:out)
-        plot!(td, Wald_model, color = :grey, subplot=i)
-        plot!(td, Poisson_model, color = :grey, subplot=i)
-        plot!(td, Exwald_model, subplot=i, linewidth=lw, color=:darkorange,
-            xlims=(0.0, Td), ylims=(0.0, 120.0), legend = :false)
-        plot!(td, Exwald_fitted, subplot=i, linewidth=lw, color=:crimson)   
-        mytext =  @sprintf "%2.0f°" phaseAngle[i]
-        annotate!(0.05, 60.0, 
-            text(mytext, 20), subplot = i)     
-       # annotate!(0.03, 80.0, text("Hello")      )
-
-       #@infiltrate
-
-    end # phase angles
-
-    # caLculate mu, lambda and tau over stimulus cycle
-    dθ = 1.0  # 5° steps
-    θ = 0.0:dθ:360.0
-    Ns = length(θ)
-    mu_dynamic     = zeros(Ns)
-    lambda_dynamic = zeros(Ns)
-    tau_dynamic    = zeros(Ns)
-
-#    @infiltrate
-    for i in 1:Ns 
-        v = v0 + stimulus(θ[i]/(360.0*F))  
-        (mu_dynamic[i], lambda_dynamic[i]) = 
-             Wald_parameters_from_FirstpassageTimeModel(v, s, barrier)
-        tau_dynamic[i] = PoissonTau_from_ThresholdTrigger(v, s, trigger, dt)
+    for rep = 1:Nrep
+        # new blg generator in every period
+        blg = make_blg_generator(blgParams, 32)
+        # simulate band-limited Gaussian white noise 
+        t = 0.0
+        while t<T
+            state = blg(t)
+            map_add(stateMap, state, 1.0, false)
+            t += dt
+        end
     end
 
-
-    #@infiltrate
-
-    # plot modeland fitted  mu during stimulus
-    ymin = minimum(mu_dynamic)
-    ymax = maximum(mu_dynamic)
-    yrange = ymax - ymin
-
-    plot!(θ, mu_dynamic, 
-        ylims=(0.005, .025), framestyle=:box, legend = false, color = :dodgerblue, 
-        xtick = phaseAngle, linewidth = 4, 
-        showaxis = true, subplot = Nphases + 1)
-    plot!(θ, mu*ones(length(θ)), 
-        linewidth = 1.5, color = :seagreen, linestyle = :dash, subplot = Nphases + 1)
- 
-   
-    # plot model and fitted lambda
-    plot!(θ, lambda_dynamic,  xtick = phaseAngle,
-        ylims=(0.0, 0.2), framestyle=:box, legend = false,  lw = 4, color = :dodgerblue, 
-        showaxis = true, subplot = Nphases + 2)
-
-
-    # plot model and fitted tau
-    ymin = minimum(tau_dynamic)
-    ymax = maximum(tau_dynamic)
-    yrange = ymax - ymin    
-    plot!(θ, tau_dynamic,  xtick = phaseAngle,
-        ylims=(-0.00, 0.04), legend = false,  linewidth = 4, color = :dodgerblue, 
-        showaxis = true, framestyle=:box, subplot = Nphases + 3) 
-    plot!(θ, tau*ones(length(θ)), 
-        linewidth = 1.5, color = :seagreen, linestyle = :dash, subplot = Nphases + 3)   
-
-    pcolor = :firebrick
-    msize = 2
-    msw = 0.1
-    scatter!(phaseAngle, mu_hat, 
-        subplot = Nphases + 1, color = pcolor, 
-        ms = msize, markerstrokewidth = msw)  
-    annotate!(45.0, .02, text("μ", 30, :dodgerblue), subplot = Nphases+1)
-    scatter!(phaseAngle, lambda_hat, 
-        subplot = Nphases + 2, color = pcolor, 
-        ms = msize, markerstrokewidth = msw)  
-    annotate!(45.0, .15, text("λ", 30, :dodgerblue), subplot = Nphases+2)
-    scatter!(phaseAngle, tau_hat, 
-        subplot = Nphases + 3, color = pcolor, 
-        ms = msize, markerstrokewidth = msw)  
-    annotate!(45.0, .025, text("τ", 30, :dodgerblue), subplot = Nphases+3)
-
-
-    Nfit = length(fitAngle)
-    mu_hatf = zeros(Nfit)
-    lambda_hatf = zeros(Nfit)
-    tau_hatf = zeros(Nfit)
-    for rep = 1:3
-        # simulate Exwald neuron
-        spt = Exwald_Neuron(N, (mu, lambda, tau), stimulus)    
-        
-        for i in 1:Nfit
-            # intervals at ith phase angle
-            ISI_i = intervalPhase_independent(spt, fitAngle[i], F)
-
-            # fit model
-            (maxf, p, ret) = Fit_Exwald_to_ISI(ISI_i, collect(Exwald_param),  collect(Exwald_param))
-
-            mu_hatf[i]     = p[1]
-            lambda_hatf[i] = p[2]
-            tau_hatf[i]    = p[3]
-        end
-        scatter!(fitAngle, mu_hatf, 
-            subplot = Nphases + 1, color = pcolor, 
-            ms = msize, markerstrokewidth = msw)
-        scatter!(fitAngle, lambda_hatf, 
-            subplot = Nphases + 2, color = pcolor, 
-            ms = msize, markerstrokewidth = msw)
-        scatter!(fitAngle, tau_hatf, 
-            subplot = Nphases + 3, color = pcolor, 
-            ms = msize, markerstrokewidth = msw)  
-
-    end #rep
-
-    display(plt)
-
-    # png("nameThisFigure")
-
-    #@infiltrate
-
-    (mu_hat, lambda_hat, tau_hat, spt)
-
+    stateMap
 end
- =#
+
+# pdf of states and conditional spike intensity 
+# fractional (q) Steinhausen Exwald (FSX) neuron responding to blg stimulus 
+# 
+function demo_FSX_blg_statemap(blgParams, q::Float64, EXWparam, Nrep)
+
+    Δω = 5.0
+    stateMap = init_stateMap(blgParams, Δω)  # frequency histogram/pdf of states
+    spikeMap = deepcopy(stateMap)            # frequency histogram/pdf of spikes
+
+    dt = DEFAULT_SIMULATION_DT
+    T  = 1.0/blgParams[1]    # blg period
+
+    # fractional torsion pendulum model fpt(w,t)
+    #   updates cupula deflection δ from t-dt to t given head angular acceleration w at t 
+    # Has internal state (δ, δ') iniitalized to (0.0, 0.0)
+    #     and M=2N+1 auxiliary state variables for fractional derivative approximation
+    fpt = make_fractional_Steinhausen_stateUpdate_acceleration_fcn(q, 0.0, 0.0)
+
+    # Exwald neuron
+    (xwneuron, _ ) = make_Exwald_neuron(EXWparam)
+
+
+
+    for rep = 1:Nrep
+
+        # new blg generator in every period
+        w = make_blg_generator(blgParams, 4)
+
+        # dynamic update cupula 
+        δ = t-> fpt(t->w(t)[2], t)[1]
+
+        # simulate 
+        t = 0.0
+        while t<T
+
+            # increment state frequency histogram (state map) at current stimulus state (ω, ̇ω) 
+            map_add(stateMap, w(t), 1.0, false)
+
+            # update exwald neuron given cupula deflection (1st state variable)
+            # returns true if the neuron fired
+            if xwneuron(δ, t)==true  # neuron fired 
+                map_add(spikeMap, w(t), 1.0, false) # record a spike occured in this state
+               # println(t, ", ", w(t))
+            end
+            t += dt
+        end
+        println(rep)
+    end
+    (stateMap, spikeMap)
+end
