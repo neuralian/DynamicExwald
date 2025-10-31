@@ -192,3 +192,53 @@ function fit_Sinewave_to_Firingrate(r::Vector{Float64}, f::Float64, dt::Float64)
     (pest, minf, ret)
 
 end
+using Distributions
+
+
+# fit Wald distribution to normalized histogram data
+function fit_Wald(bin_edges, bin_counts; max_iter=100, tol=1e-6)
+
+    # Initialize with midpoint estimates
+    midpoints = (bin_edges[1:end-1] .+ bin_edges[2:end]) ./ 2
+    n_total = sum(bin_counts)
+    
+    μ = sum(midpoints .* bin_counts) / n_total
+    λ = μ^3 / sum((midpoints .- μ).^2 .* bin_counts) * n_total
+    
+    for iter in 1:max_iter
+        μ_old, λ_old = μ, λ
+        
+        # E-step: Compute expected values within each interval
+        expected_values = zeros(length(bin_counts))
+        expected_inv_values = zeros(length(bin_counts))
+        
+        dist = InverseGaussian(μ, λ)
+        
+        for i in 1:length(bin_counts)
+            if bin_counts[i] > 0
+                # Approximate expected value in interval using midpoint
+                # (More sophisticated: numerical integration)
+                lower, upper = bin_edges[i], bin_edges[i+1]
+                
+                # Simple approximation: use midpoint
+                expected_values[i] = midpoints[i]
+                expected_inv_values[i] = 1 / midpoints[i]
+            end
+        end
+        
+        # M-step: Update parameters
+        μ = sum(expected_values .* bin_counts) / n_total
+        
+        E_inv = sum(expected_inv_values .* bin_counts) / n_total
+        λ = 1 / (E_inv - 1/μ)
+        
+        # Check convergence
+        if abs(μ - μ_old) < tol && abs(λ - λ_old) < tol
+            println("Converged in $iter iterations")
+            break
+        end
+    end
+    
+    return μ, λ
+end
+

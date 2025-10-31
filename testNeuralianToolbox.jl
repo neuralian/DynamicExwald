@@ -32,59 +32,78 @@
 # X = demo_blgStateMap(blgParams, .5, 128)
 # heatmap!(X[1])
 
-include("Neuralian.jl")
-include("NeuralianFit.jl")
-include("NeuralianBayesian.jl")
-#include("NeuralianPlot.jl")
+include("Neuralian_header.jl")
 
-using Infiltrator, Colors
 
-# Compare first passage time simulation histogram to InverseGaussian from Distributions.jl 
-function test_Wald_sample(mu::Float64, lambda::Float64)
+# compare interval distribution of inhomogenous Poisson process 
+#   with rate r(t) = baserate + Δrate(t) to theoretical and fitted distributions.
+# Intervals in an inhomogenous Poisson process should be Exponentially distributed
+#  with mean interval equal to 1/(mean rate), i.e. same as a homogeneous Poisson process
+#  with constant rate.
+function check_inhomogenous_Poisson()
 
-    N = 5000  # sample size
-    interval = zeros(N)
-    Wald_sample(interval, mu, lambda)
+    T = 60.    # simulate 1 minutes 
+    dt = DEFAULT_SIMULATION_DT
 
+    meanrate = 100.0                  # events per second
+    Δrate = t -> meanrate*(t/T)^2     # quadratically increasing rate up to 2x initial
+
+    # intervals by threshold crossing in time-varying Gaussian white noise
+    ISI, R = time_varying_exponential_intervals_by_threshold_crossing(meanrate, Δrate, T, dt)
+
+    # ISI histogram
     F = Figure()
     ax = Axis(F[1,1])
-    hist!(interval, normalization=:pdf, bins=100)
-       #  label=@sprintf "First passage times (%.3f, %.3f)" mu lambda)
-    t = DEFAULT_SIMULATION_DT:DEFAULT_SIMULATION_DT:(maximum(interval)*1.2)
-    lines!(t, pdf(InverseGaussian(mu, lambda), t), color = :red)
+
+    # normalized histogram (probability density)
+    # at least 32 bins or 500 intervals per bin
+    H = fit(Histogram, ISI, nbins = max(Int(round(length(ISI)/32.0)), 32)) 
+
+    # Frequency histogram edges and counts
+    bin_edges = H.edges[1]
+    bin_width = bin_edges[2]-bin_edges[1]
+    bin_counts = H.weights./(sum(H.weights)/bin_width)
+
+    hist!(ax, ISI, bins=bin_edges, normalization = :pdf)
+
+    # average rate
+    t = 0.0:dt:T
+    rhat = meanrate + sum(Δrate.(t))/length(t)
+
+    # overlay expected distribution
+    lines!(bin_edges, rhat.*exp.(-rhat*bin_edges), color = :salmon1, linewidth = 2)
+
     display(F)
 
-    #@infiltrate
-    xlims!(0.0, xlims(ax)[2])
-    text!(ax, 0.75*xlims(ax)[end], 0.75*ylims(ax)[end], text = "Wald ($mu, $lambda)")
-    # xlims!(0.0, t[end])
-    #display(F)
-    (F,ax)
 end
 
-# Compare Expsim histogram to Exponential 
-function test_Exponential_sample(tau::Float64, dt::Float64=DEFAULT_SIMULATION_DT)
 
-    N = 5000  # sample size
-    interval = zeros(N)
-    (m, s, threshold) = Exponential_sample(interval, tau)
 
-    F = Figure()
-    ax = Axis(F[1,1])
-    hist!(interval, normalization=:pdf, bins=200)
 
-     #   label=@sprintf "Threshold trigger (%.2f, %.2f, %.2f)" m s threshold)
-    t = 0.0:dt:(maximum(interval)*1.2)
-    lines!(t, exp.(-t ./ tau) ./ tau, linewidth=2.5, color = :red)
-     #   label=@sprintf "Exponential (τ = %.2f)" tau)  #pdf(InverseGaussian(mu, lambda), t))
-    xlims!(0.0, t[end])
-    display(F)
-    text!(ax, 0.25*t[end], 0.85*ylims(ax)[end], color = :dodgerblue,
-        text =@sprintf "Threshold trigger (μ = %.2f, σ = %.2f, Thr = %.2f; τ = %.2f)" m s threshold tau)
-    text!(ax, 0.5*t[end], 0.75*ylims(ax)[end], color = :salmon1,
-        text =@sprintf "Exponential (τ = %.2f)" tau)
-   # @infiltrate
-end
+
+# # Compare Expsim histogram to Exponential 
+# function test_Exponential_sample(tau::Float64, dt::Float64=DEFAULT_SIMULATION_DT)
+
+#     N = 5000  # sample size
+#     interval = zeros(N)
+#     (m, s, threshold) = Exponential_sample(interval, tau)
+
+#     F = Figure()
+#     ax = Axis(F[1,1])
+#     hist!(interval, normalization=:pdf, bins=200)
+
+#      #   label=@sprintf "Threshold trigger (%.2f, %.2f, %.2f)" m s threshold)
+#     t = 0.0:dt:(maximum(interval)*1.2)
+#     lines!(t, exp.(-t ./ tau) ./ tau, linewidth=2.5, color = :red)
+#      #   label=@sprintf "Exponential (τ = %.2f)" tau)  #pdf(InverseGaussian(mu, lambda), t))
+#     xlims!(0.0, t[end])
+#     display(F)
+#     text!(ax, 0.25*t[end], 0.85*ylims(ax)[end], color = :dodgerblue,
+#         text =@sprintf "Threshold trigger (μ = %.2f, σ = %.2f, Thr = %.2f; τ = %.2f)" m s threshold tau)
+#     text!(ax, 0.5*t[end], 0.75*ylims(ax)[end], color = :salmon1,
+#         text =@sprintf "Exponential (τ = %.2f)" tau)
+#    # @infiltrate
+# end
 
 
 # Inhomogeneous Poisson by threshold-crossing with time-varying noise
@@ -140,49 +159,46 @@ function inhomogenousPoisson_test(N, play_audio::Bool = false)
 
 end
 
-# Inhomogeneous Inverse Gaussian by simulating time-to-barrier
-#  with time-varying drift
-# N = number of intervals
-function inhomogenousWald_test(N, play_audio::Bool = false)
+# show that drift-diffusion first passage time simulation 
+# generates intervals matching specified Wald distribution.
+# Plots the ISI distribution overlaid with specified and fitted Wald models 
+# The good news is that we get a pretty good fit to the specified model with only a few intervals.
+function Check_Wald_Distribution(Waldparam::Tuple{Float64, Float64}, N::Int64 = 5000)
 
-    I = zeros(N)
-    # FPT process parameters for spontaneous Exwald
-    mu = 0.013
-    lambda = 0.1
-    dt = DEFAULT_SIMULATION_DT
-    (v0, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda)   # Drift speed, noise s.d. & barrier height for Wald component
-
-    #q(t) = t < 50.0 ? 9.5 : 10.0
-    f = 1.0
-    a = 80.0
-    q2(t) = v0 + a * sin(2 * pi * f * t)
-    FirstPassageTime_simulate(I, q2, s, barrier, dt)
-    #@infiltrate
-
-    spt = cumsum(I)   # spike times from intervals
-
-    gdt = 1.0e-3
-    (t,r) = GLR(spt, [0.1], gdt)
+    #  spontaneous spikes
+    st = spiketimes_timevaryingWald(Waldparam, t->0.0, N);
 
 
     F = Figure(size=(1600, 400))
     ax = Axis(F[1,1])
 
-    ax.title = "Wald Simulation"
+    ax.title = "Wald distribution from drift-diffusion model"
 
-    splot!(ax,spt, 20.0)
-    lines!(t, r)
-    plot!(t, [q2(x) for x in t], strokecolor = :salmon1, markersize = 1.0, strokewidth = 1.0)
+    ISI = diff(st)
 
+    # frequency histogram 
+    H = fit(Histogram, ISI, nbins = max(Int(round(N/500)), 32)) 
 
+    # Frequency histogram edges and counts
+    bin_edges = H.edges[1]
+    bin_width = bin_edges[2]-bin_edges[1]
+    bin_counts = H.weights./(sum(H.weights)/bin_width)
 
+    hist!(ax, ISI, bins=bin_edges, normalization = :pdf)
+
+    # overlay pdf
+    Wald_pdf = t-> pdf(InverseGaussian(Waldparam...), t)
+    lines!(bin_edges, Wald_pdf(bin_edges), linewidth = 3, color = :salmon1, label = "Specified")
+
+    # plot fitted Wald
+    (μ_hat, λ_hat) = fit_Wald(bin_edges, bin_counts) # fit by EM
+    lines!(bin_edges, pdf(InverseGaussian(μ_hat, λ_hat), bin_edges), linewidth = 1, color = :blue, label = "Fitted")
+ 
+    axislegend(ax)
     display(F)
 
-    if play_audio
-        bs = s2b(spt, 1.0e-4)  # binary representation at 10KHz
-        soundsc(bs, 1.0e4)     # play audio at 10KHz
-    end
-
+    (bin_counts, bin_edges)
+    
 end
 
 
@@ -275,60 +291,6 @@ function test_Exwald_sample_sim(mu, lambda, tau)
 
     display(F)
 end
-
-
-
-
-# function dynamicExwald_test(N, listen::Bool=false)
-
-#     I = zeros(N)    # generate sample of size N 
-
-#     # baseline (spontaneous) Exwald parameters
-#     mu = 0.013
-#     lambda = 0.1
-#     tau = 0.01
-
-#     dt = DEFAULT_SIMULATION_DT  # just to be clear
-
-#     # First passage time model parameters for spontaneous Wald component 
-#     (v0, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda)
-
-#     # trigger threshold for spontaneous (mean==tau) Exponwential samples  with N(v0,s) noise
-#     trigger = TriggerThreshold_from_PoissonTau(v0, s, tau, dt)
-
-#     # sinusoidaal stimulus (input noise mean) parameters
-#     f = 1.0         # modulation frequency Hz (nb not spike frequency/firing rate)
-#     a = 0.0        # modulation amplitude
-
-#     # stimulus waveform
-#     q(t) = v0 + a * sin(2 * pi * f * t)
-
-#     # Exwald samples by simulating physical model of FPT + Poisson process in series
-#     Exwald_simulate(I, q, s, barrier, trigger, dt)
-#     #@infiltrate
-
-#     # Exwald neuron spike times from Exwald intervals
-#     spt = cumsum(I)   # spike times from intervals
-
-#     # plot spike train
-#     splot(spt, 20.0)
-
-#     # Gaussian rate estimate
-#     gdt = 1.0e-3                      # sample interval for GLR estimate
-#     (t, r) = GLR(spt, [0.1], gdt)       # rate estimate r at sample times t
-
-#     # plot rate estimate 
-#     plot!((t, r), size=(1000, 400))
-#     # plot stimulus
-#     display(plot!(t, [q(x) for x in t]))
-
-#     if listen
-#         bs = s2b(spt, 1.0e-4)  # binary representation at 10KHz
-#         soundsc(bs, 10000)     # play audio at 10KHz
-#     end
-# end
-
-
 
 # test dynamic Exwald with no stimulus
 function test_Exwald_Neuron_spontaneous(N::Int64,
@@ -526,7 +488,7 @@ function demo_Fractional_Steinhausen_Exwald_Neuron_sin(
 
     # simulate spike train 
     #spt = fractionalSteinhausenExwald_Neuron(q, EXWparam, w, T)
-    spt = spiketimes(xneuron, t->fpt(w, t), T)
+    (spt, _) = spiketimes(xneuron, t->fpt(w, t), T)
 
    # Gaussian rate estimate
    # Matched filter for stimulus frequecy
@@ -573,7 +535,7 @@ function demo_Fractional_Steinhausen_Exwald_Neuron_sin(
 
     # return spike times, rate sample times, rate (at sample times), 
     # angular velocity and acceleration (at sample times)
-    return (spt, collect(tr), r, w_tr, wdot_tr)
+    return (spt, collect(tr), r, w_tr, wdot_tr, Fig)
 end
 
 
