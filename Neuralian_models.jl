@@ -61,67 +61,19 @@ function Wald_sample(interval::Vector{Float64}, mu::Float64, lambda::Float64, dt
     return interval
 end
 
-
-#function FirstPassageTime_simulate(interval::Vector{Float64}, v::Float64, s::Float64, a::Float64, dt::Float64=DEFAULT_SIMULATION_DT, T::Float64=1.5*v/a*length(interval))
-
-# Samples from Exponential distribution by Gaussian noise = Normal(m,s) threshold crossing
-# Generates intervals up to time T=Endpoint if Endpoint is Float64
-#   or N = Endpoint intervals if Endpoint is Int64
-function exponential_intervals_by_threshold_crossing(m::Float64, s::Float64, Threshold::Float64, 
-                        Endpoint::Union{Float64, Int64}, dt::Float64=DEFAULT_SIMULATION_DT)
-
-    if typeof(Endpoint)==Float64
-        EndatT = true
-        T = Endpoint    # generate intervals until this time
-        N = 2*T/PoissonTau_from_ThresholdTrigger(m, s, threshold, dt)      # allocate for 2x expected #spikes 
-    else
-        EndatT = false
-        T = Inf        # keep going until ...
-        N = Endpoint   # generate this many intervals
-    end
-
-    ISI = zeros(Float64, N)   # to hold intervals
-
-    #@infiltrate
-    i = 0
-    t = 0.0
-    t0 = 0.0
-    while true    # will exit when i>N or t>T, which must be finite because tau<infinity
-        i += 1
-        if i > N                   # have filled ISI, either we are done or need more room
-            if EndatT && t < T     # simulation duration not reached, need more room
-                M = Int(round(N*.25))
-                ISI = append!(ISI, zeros(Float64, M))  # allocate 25% more space
-                N = N + M
-            else
-                return ISI    # done, return N intervals
-            end
-        end
-        while ((m + s * randn()[]) < Threshold)
-            t += dt
-            if t > T       # reached time T (never happens if EndatT is false because then T = Inf)
-                return ISI[1:i-1]   # ith interval has not been generated, number of intervals = i-1
-            end
-        end
-        ISI[i] = t-t0  
-        t0 = t
-    end
-end
-
-# Samples ISI from inhomogenous Exponential distribution by threshold crossing 
-#   with time-varying mean rate r(t) = meanrate + Δrate(t) > 0.0
-# Generates intervals up to time T=Endpoint if Endpoint is Float64
-#   or N = Endpoint intervals if Endpoint is Int64.
-# Special case Δrate(t) = 0.0 gives homogenous distribution.
+# Intervals ISI drawn from inhomogenous Exponential distribution by Gaussian noise threshold crossing 
+#   with time-varying mean rate r(t) = baserate + Δrate(t) > 0.0
+# Simulate to T=Endpoint if Endpoint is Float64 or generate N=Endpoint intervals if Endpoint is Int64.
+# Special case Δrate(t) = 0.0 gives homogenous distribution (constant mean rate = baserate)
 # cumsum(ISI) is event times in a Poisson process with specified (time varying) rate 
-function time_varying_exponential_intervals_by_threshold_crossing(meanrate::Float64, Δrate::Function, 
+function time_varying_exponential_intervals_by_threshold_crossing(baserate::Float64, Δrate::Function, 
                         Endpoint::Union{Float64, Int64}, dt::Float64=DEFAULT_SIMULATION_DT)
 
     # trigger level for Poisson process at required mean rate
     # using unit variance Gaussian noise
-    v0 = 1.0/meanrate
+    v0 = 1.0/baserate
     s = 1.0
-    Threshold = TriggerThreshold_from_PoissonTau(v0, s, 1.0/meanrate, dt)
+    Threshold = TriggerThreshold_from_PoissonTau(v0, s, 1.0/baserate, dt)
 
     if typeof(Endpoint)==Float64
         EndatT = true
@@ -151,12 +103,12 @@ function time_varying_exponential_intervals_by_threshold_crossing(meanrate::Floa
             end
         end
         #@infiltrate
-        τ = 1.0/(meanrate + Δrate(t))  # mean interval at this instant
+        τ = 1.0/(baserate + Δrate(t))  # mean interval at this instant
         τ_sum += τ
         # find mean noise for expected interval τ (i.e. if noise was fixed until next event)
         v = mean_noise_for_Poisson_given_threshold(τ, s, Threshold, dt)
         while ((v + s * randn()[]) < Threshold)  # until threshold crossed
-            t += dt
+            t += dt 
             if t > T       # reached time T (never happens if EndatT is false because then T = Inf)
                 return ISI[1:i-1], τ_sum/i  # ith interval has not been generated, number of intervals = i-1
             end
@@ -215,228 +167,228 @@ end
 
 
 
-# stationary Exwald samples by simulation
-# interval: return vector must be initialized to zeros
-#  v:  input noise mean = drift speed
-#  s: input noise sd = diffusion coefficient
-# barrier: barrier distance for drift-diffusion process
-# trigger: trigger threshold for Exponential interval geenration (Poisson process)
+# # stationary Exwald samples by simulation
+# # interval: return vector must be initialized to zeros
+# #  v:  input noise mean = drift speed
+# #  s: input noise sd = diffusion coefficient
+# # barrier: barrier distance for drift-diffusion process
+# # trigger: trigger threshold for Exponential interval geenration (Poisson process)
 
-# static Exwald by simulation, add 
-function Exwald_simulate(interval::Vector{Float64},
-    v::Float64, s::Float64, barrier::Float64, trigger::Float64, dt::Float64=DEFAULT_SIMULATION_DT)
+# # static Exwald by simulation, add 
+# function Exwald_simulate(interval::Vector{Float64},
+#     v::Float64, s::Float64, barrier::Float64, trigger::Float64, dt::Float64=DEFAULT_SIMULATION_DT)
 
-    # nb must call FPT then Poisson sim because FPT replaces, Poisson adds to interval
-    FirstPassageTime_simulate(interval, v, s, barrier, dt)  # inserts Wald intervals 
+#     # nb must call FPT then Poisson sim because FPT replaces, Poisson adds to interval
+#     FirstPassageTime_simulate(interval, v, s, barrier, dt)  # inserts Wald intervals 
 
-    ThresholdTrigger_simulate(interval, v, s, trigger, dt)  # adds Exponential intervals
+#     ThresholdTrigger_simulate(interval, v, s, trigger, dt)  # adds Exponential intervals
 
-end
+# end
 
-# Dynamic Exwald simulation in-place
-# ExWald_Neuron converts Exwald parameters to physical simulation parameters
-#   and then calls this function.
-function Exwald_simulate(interval::Vector{Float64},
-    v::Function, s::Float64, barrier::Float64, trigger::Float64, dt::Float64=DEFAULT_SIMULATION_DT)
+# # Dynamic Exwald simulation in-place
+# # ExWald_Neuron converts Exwald parameters to physical simulation parameters
+# #   and then calls this function.
+# function Exwald_simulate(interval::Vector{Float64},
+#     v::Function, s::Float64, barrier::Float64, trigger::Float64, dt::Float64=DEFAULT_SIMULATION_DT)
 
 
-    x = 0.0     # drift-diffusion integral 
-    t0 = 0.0    # ith interval start time
-    t = 0.0    # current time
-    i = 1       # interval counter
+#     x = 0.0     # drift-diffusion integral 
+#     t0 = 0.0    # ith interval start time
+#     t = 0.0    # current time
+#     i = 1       # interval counter
 
-    #@infiltrate
+#     #@infiltrate
 
-    while i <= length(interval)  # generate spikes until interval vector is full
+#     while i <= length(interval)  # generate spikes until interval vector is full
 
-        while x < barrier                                   # until reached barrier                                # time update
-            x = x + v(t) * dt + s * randn(1)[] * sqrt(dt)   # integrate noise
-            t = t + dt      
-        end
-        interval[i] = t - t0                        # record time to barrier (Wald sample)
-        x = x - barrier                             # reset integral
-        t0 = t                                      # next interval start time
+#         while x < barrier                                   # until reached barrier                                # time update
+#             x = x + v(t) * dt + s * randn(1)[] * sqrt(dt)   # integrate noise
+#             t = t + dt      
+#         end
+#         interval[i] = t - t0                        # record time to barrier (Wald sample)
+#         x = x - barrier                             # reset integral
+#         t0 = t                                      # next interval start time
   
-        while (v(t) + s * randn()[]) < trigger          # tick until noise crosses trigger level
-            t = t + dt
-        end
-        interval[i] += t - t0                           # add Exponential sample to Wald sample
-        t0 = t                                          # next interval start time
-        i = i + 1                                       # index for next interval
-    end
+#         while (v(t) + s * randn()[]) < trigger          # tick until noise crosses trigger level
+#             t = t + dt
+#         end
+#         interval[i] += t - t0                           # add Exponential sample to Wald sample
+#         t0 = t                                          # next interval start time
+#         i = i + 1                                       # index for next interval
+#     end
 
-    return interval
-end
+#     return interval
+# end
 
-# simulate dynamic exwald up to time T
-# spiketime vector must be large enough to hold the spike train
-# if not this function will crash
-function Exwald_simulate(spiketime::Vector{Float64}, T::Float64, 
-    v::Function, s::Float64, barrier::Float64, trigger::Float64, dt::Float64=DEFAULT_SIMULATION_DT)
+# # simulate dynamic exwald up to time T
+# # spiketime vector must be large enough to hold the spike train
+# # if not this function will crash
+# function Exwald_simulate(spiketime::Vector{Float64}, T::Float64, 
+#     v::Function, s::Float64, barrier::Float64, trigger::Float64, dt::Float64=DEFAULT_SIMULATION_DT)
 
 
-    x = 0.0     # drift-diffusion integral 
-    t0 = 0.0    # ith interval start time
-    t = dt    # current time
-    i = 1       # interval counter
+#     x = 0.0     # drift-diffusion integral 
+#     t0 = 0.0    # ith interval start time
+#     t = dt    # current time
+#     i = 1       # interval counter
 
-    N = length(spiketime)
+#     N = length(spiketime)
 
-    #@infiltrate
+#     #@infiltrate
 
-    spiketime .= 0.0
+#     spiketime .= 0.0
 
-    while t <= T  # generate spikes until time T
+#     while t <= T  # generate spikes until time T
 
-        while x < barrier                                   # until reached barrier                                # time update
-            x = x + v(t) * dt + s * randn(1)[] * sqrt(dt)   # integrate noise
-            t = t + dt      
-        end
-        #interval[i] = t - t0                        # record time to barrier (Wald sample)
-        x = x - barrier                             # reset integral
-        #t0 = t                                      # next interval start time
+#         while x < barrier                                   # until reached barrier                                # time update
+#             x = x + v(t) * dt + s * randn(1)[] * sqrt(dt)   # integrate noise
+#             t = t + dt      
+#         end
+#         #interval[i] = t - t0                        # record time to barrier (Wald sample)
+#         x = x - barrier                             # reset integral
+#         #t0 = t                                      # next interval start time
   
-        while (v(t) + s * randn()[]) < trigger          # tick until noise crosses trigger level
-            t = t + dt
-        end
+#         while (v(t) + s * randn()[]) < trigger          # tick until noise crosses trigger level
+#             t = t + dt
+#         end
 
 
-        spiketime[i] = t                              
-        #t0 = t                                          # next interval start time
-        i = i + 1                                       # index for next interval
-        if i > N
-            N = Int(round(1.1* N))
-            spiketime = resize!(spiketime, N)   # lengthen spiketime vector by 10%
-        end
+#         spiketime[i] = t                              
+#         #t0 = t                                          # next interval start time
+#         i = i + 1                                       # index for next interval
+#         if i > N
+#             N = Int(round(1.1* N))
+#             spiketime = resize!(spiketime, N)   # lengthen spiketime vector by 10%
+#         end
 
-    end
+#     end
 
-    N = i-2  # actual length of spike train, last spike time is > T and i has been incremented
-    spiketime = resize!(spiketime, N)  # resize to actual length
+#     N = i-2  # actual length of spike train, last spike time is > T and i has been incremented
+#     spiketime = resize!(spiketime, N)  # resize to actual length
 
-    # return number of spikes in train
-    return N
-end
+#     # return number of spikes in train
+#     return N
+# end
 
-# Dynamic Exwald simulation specifying N intervals
-function Exwald_simulate(N::Int64,
-    v::Function, s::Float64, barrier::Float64, trigger::Float64, dt::Float64=DEFAULT_SIMULATION_DT)
+# # Dynamic Exwald simulation specifying N intervals
+# function Exwald_simulate(N::Int64,
+#     v::Function, s::Float64, barrier::Float64, trigger::Float64, dt::Float64=DEFAULT_SIMULATION_DT)
 
-   interval = zeros(N)
-   Exwald_simulate(interval, v, s, barrier, trigger, dt)
+#    interval = zeros(N)
+#    Exwald_simulate(interval, v, s, barrier, trigger, dt)
 
-end
+# end
 
-# stationary Exwald samples by simulation
-# sample size = length(interval)
-function Exwald_sample_sim(N::Int64, mu::Float64, lambda::Float64, tau::Float64, dt::Float64=DEFAULT_SIMULATION_DT)
+# # stationary Exwald samples by simulation
+# # sample size = length(interval)
+# function Exwald_sample_sim(N::Int64, mu::Float64, lambda::Float64, tau::Float64, dt::Float64=DEFAULT_SIMULATION_DT)
 
-    (v, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda)   # Drift speed, noise s.d. & barrier height for Wald component
-    trigger = TriggerThreshold_from_PoissonTau(v, s, tau, dt)            # threshold for Poisson component using same noise
+#     (v, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda)   # Drift speed, noise s.d. & barrier height for Wald component
+#     trigger = TriggerThreshold_from_PoissonTau(v, s, tau, dt)            # threshold for Poisson component using same noise
 
-    #@infiltrate
-    I = zeros(N)
-    Exwald_simulate(I, v, s, barrier, trigger, dt)
+#     #@infiltrate
+#     I = zeros(N)
+#     Exwald_simulate(I, v, s, barrier, trigger, dt)
 
-    I
+#     I
 
-end
+# end
 
-# Exwald sample by sum of inverse Gaussian and Exponential
-#function Exwald_sample_sum(interval::Vector{Float64}, mu::Float64, lambda::Float64, tau::Float64, dt::Float64=DEFAULT_SIMULATION_DT)
-function Exwald_sample_sum(N::Int64, mu::Float64, lambda::Float64, tau::Float64, dt::Float64=DEFAULT_SIMULATION_DT)
+# # Exwald sample by sum of inverse Gaussian and Exponential
+# #function Exwald_sample_sum(interval::Vector{Float64}, mu::Float64, lambda::Float64, tau::Float64, dt::Float64=DEFAULT_SIMULATION_DT)
+# function Exwald_sample_sum(N::Int64, mu::Float64, lambda::Float64, tau::Float64, dt::Float64=DEFAULT_SIMULATION_DT)
 
-    rand(InverseGaussian(mu, lambda), N) + rand(Exponential(tau), N)
+#     rand(InverseGaussian(mu, lambda), N) + rand(Exponential(tau), N)
 
-end
-
-
-# Exwald spike times 
-function Exwald_spiketimes(mu::Float64, lambda::Float64, tau::Float64,
-    T::Float64, dt::Float64=1.0e-5)
-
-    # expected number of spikes in time T is T/(mu+tau)                       
-    N = Int(ceil(1.5 * T / (mu + tau)))  # probably enough spikes to reach T
-    I = zeros(N)
-    Exwald_sample_sim(I, mu, lambda, tau, dt)
-    spiketime = cumsum(I)
-    spiketime = spiketime[findall(spiketime .<= T)]
-end
+# end
 
 
-# sample of size N from dynamic Exwald 
-# spontaneous Exwald parameters Exwald_param = (mu, lambda, tau)
-# stimulus function of time, default f(t)=0.0 (gives spontaneous spike train)
-# Default stimulus = 0.0 (spontaneous activity)
-function Exwald_Neuron_Nspikes(N::Int64,
-    Exwald_param::Tuple{Float64,Float64,Float64},
-    stimulus::Function,
-    dt::Float64=DEFAULT_SIMULATION_DT,
-    intervals::Bool=false)  # returns spiketimes if false, intervals if true  
+# # Exwald spike times 
+# function Exwald_spiketimes(mu::Float64, lambda::Float64, tau::Float64,
+#     T::Float64, dt::Float64=1.0e-5)
+
+#     # expected number of spikes in time T is T/(mu+tau)                       
+#     N = Int(ceil(1.5 * T / (mu + tau)))  # probably enough spikes to reach T
+#     I = zeros(N)
+#     Exwald_sample_sim(I, mu, lambda, tau, dt)
+#     spiketime = cumsum(I)
+#     spiketime = spiketime[findall(spiketime .<= T)]
+# end
 
 
-    I = zeros(N)    # allocate vector for sample of size N 
-
-    dt = DEFAULT_SIMULATION_DT  # just to be clear
-
-    # extract Exwald parameters
-    (mu, lambda, tau) = Exwald_param
-
-    # First passage time model parameters for spontaneous Wald component 
-    (v0, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda)
-
-    # trigger threshold for spontaneous (mean==tau) Exponwential samples  with N(v0,s) noise
-    trigger = TriggerThreshold_from_PoissonTau(v0, s, tau, dt)
-
-    # drift rate  = spontaneous + stimulus
-    q(t) = v0 + stimulus(t)
-
-    #@infiltrate
-
-    # Exwald samples by simulating physical model of FPT + Poisson process in series
-    Exwald_simulate(I, q, s, barrier, trigger, dt)
-
-    # spike train is cumulative sum of intervals
-    return intervals ? I : cumsum(I)
-
-end
-
-# Simulate inhomogenous Exwald for T seconds
-# spontaneous Exwald parameters Exwald_param = (mu, lambda, tau)
-# stimulus function of time, default f(t)=0.0 (gives spontaneous spike train)
-# Default stimulus = 0.0 (spontaneous activity)
-function Exwald_Neuron(T::Float64,
-    Exwald_param::Tuple{Float64,Float64,Float64},
-    stimulus::Function,
-    dt::Float64=DEFAULT_SIMULATION_DT)  
-
-    # extract Exwald parameters
-    (mu, lambda, tau) = Exwald_param
+# # sample of size N from dynamic Exwald 
+# # spontaneous Exwald parameters Exwald_param = (mu, lambda, tau)
+# # stimulus function of time, default f(t)=0.0 (gives spontaneous spike train)
+# # Default stimulus = 0.0 (spontaneous activity)
+# function Exwald_Neuron_Nspikes(N::Int64,
+#     Exwald_param::Tuple{Float64,Float64,Float64},
+#     stimulus::Function,
+#     dt::Float64=DEFAULT_SIMULATION_DT,
+#     intervals::Bool=false)  # returns spiketimes if false, intervals if true  
 
 
-    # First passage time model parameters for spontaneous Wald component 
-    (v0, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda)
+#     I = zeros(N)    # allocate vector for sample of size N 
 
-    # trigger threshold for spontaneous (mean==tau) Exponwential samples  with N(v0,s) noise
-    trigger = TriggerThreshold_from_PoissonTau(v0, s, tau, dt)
+#     dt = DEFAULT_SIMULATION_DT  # just to be clear
 
-    # drift rate  = spontaneous + stimulus
-    q(t) = v0 + stimulus(t)
+#     # extract Exwald parameters
+#     (mu, lambda, tau) = Exwald_param
 
-    # allocate array for spike train, 2x longer than expected length
-    Expected_Nspikes = Int(round( T/(mu + tau))) # average number of spikes
-    spiketime = zeros(2*Expected_Nspikes)
+#     # First passage time model parameters for spontaneous Wald component 
+#     (v0, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda)
+
+#     # trigger threshold for spontaneous (mean==tau) Exponwential samples  with N(v0,s) noise
+#     trigger = TriggerThreshold_from_PoissonTau(v0, s, tau, dt)
+
+#     # drift rate  = spontaneous + stimulus
+#     q(t) = v0 + stimulus(t)
+
+#     #@infiltrate
+
+#     # Exwald samples by simulating physical model of FPT + Poisson process in series
+#     Exwald_simulate(I, q, s, barrier, trigger, dt)
+
+#     # spike train is cumulative sum of intervals
+#     return intervals ? I : cumsum(I)
+
+# end
+
+# # Simulate inhomogenous Exwald for T seconds
+# # spontaneous Exwald parameters Exwald_param = (mu, lambda, tau)
+# # stimulus function of time, default f(t)=0.0 (gives spontaneous spike train)
+# # Default stimulus = 0.0 (spontaneous activity)
+# function Exwald_Neuron(T::Float64,
+#     Exwald_param::Tuple{Float64,Float64,Float64},
+#     stimulus::Function,
+#     dt::Float64=DEFAULT_SIMULATION_DT)  
+
+#     # extract Exwald parameters
+#     (mu, lambda, tau) = Exwald_param
 
 
-    # @infiltrate   # << this was active when I was last working on this ... 
+#     # First passage time model parameters for spontaneous Wald component 
+#     (v0, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda)
 
-    # Exwald samples by simulating physical model of FPT + Poisson process in series
-    nSpikes = Exwald_simulate(spiketime, T, q, s, barrier, trigger, dt)
+#     # trigger threshold for spontaneous (mean==tau) Exponwential samples  with N(v0,s) noise
+#     trigger = TriggerThreshold_from_PoissonTau(v0, s, tau, dt)
 
-    # spike train is cumulative sum of intervals
-    return spiketime[1:nSpikes]
+#     # drift rate  = spontaneous + stimulus
+#     q(t) = v0 + stimulus(t)
 
-end
+#     # allocate array for spike train, 2x longer than expected length
+#     Expected_Nspikes = Int(round( T/(mu + tau))) # average number of spikes
+#     spiketime = zeros(2*Expected_Nspikes)
+
+
+#     # @infiltrate   # << this was active when I was last working on this ... 
+
+#     # Exwald samples by simulating physical model of FPT + Poisson process in series
+#     nSpikes = Exwald_simulate(spiketime, T, q, s, barrier, trigger, dt)
+
+#     # spike train is cumulative sum of intervals
+#     return spiketime[1:nSpikes]
+
+# end
 
 # returns neuron = (exwald_neuron, EXW_param) 
 # where neuron is a closure function to simulate exwald_neuron(δ(t)) given cupula deflection δ(t)
@@ -449,8 +401,7 @@ function make_Exwald_neuron(EXW_param::Tuple{Float64, Float64, Float64}, dt::Flo
 
 
     # First passage time model parameters for spontaneous Wald component 
-    (v0, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda)
-
+    (v0, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda, "barrier", 1.0)
     # trigger threshold for spontaneous (mean==tau) Exponwential samples  with N(v0,s) noise
     trigger = TriggerThreshold_from_PoissonTau(v0, s, tau, dt)
 
@@ -461,10 +412,11 @@ function make_Exwald_neuron(EXW_param::Tuple{Float64, Float64, Float64}, dt::Flo
     function exwald_neuron(δ::Function, t::Float64)
         
         if refractory 
-            x = x + (v0 + G*δ(t))*dt + s * randn(1)[] * sqrt(dt)   # integrate noise
+            dx = (v0 + G*δ(t))*dt + s * randn(1)[] * sqrt(dt)   # integrate noise
+            x = x + dx
             if x >= barrier      
                 refractory = false    # refractory period is over when barrier is reached
-                x = x - barrier       # reset integral for next refractory period
+                x -= barrier     # reset integral for next refractory period
             else
                 return false  # still refractory
             end
@@ -627,7 +579,7 @@ function interspike_intervals(neuron::Tuple{Function, Tuple}, input::Function, N
     i = 0
     while i < N
         t += dt
-        if the_neuron(input(t))==true   # neuron fired
+        if the_neuron(input, t)==true   # neuron fired
             i += 1 
             interval[i] = t - previous_spiketime
             previous_spiketime = t  

@@ -40,7 +40,7 @@ include("Neuralian_header.jl")
 # Intervals in an inhomogenous Poisson process should be Exponentially distributed
 #  with mean interval equal to 1/(mean rate), i.e. same as a homogeneous Poisson process
 #  with constant rate.
-function check_inhomogenous_Poisson()
+function check_inhomogeneous_Poisson_distribution()
 
     T = 60.    # simulate 1 minutes 
     dt = DEFAULT_SIMULATION_DT
@@ -54,6 +54,7 @@ function check_inhomogenous_Poisson()
     # ISI histogram
     F = Figure()
     ax = Axis(F[1,1])
+    ax.title = "Interval distribution of time-varying Poisson process is Exponential"
 
     # normalized histogram (probability density)
     # at least 32 bins or 500 intervals per bin
@@ -63,6 +64,8 @@ function check_inhomogenous_Poisson()
     bin_edges = H.edges[1]
     bin_width = bin_edges[2]-bin_edges[1]
     bin_counts = H.weights./(sum(H.weights)/bin_width)
+    bin_centres = collect((bin_edges[2:end] + bin_edges[1:(end-1)])*0.5)
+    P_bin = bin_counts/sum(bin_counts)    # probability distribution 
 
     hist!(ax, ISI, bins=bin_edges, normalization = :pdf)
 
@@ -71,91 +74,21 @@ function check_inhomogenous_Poisson()
     rhat = meanrate + sum(Δrate.(t))/length(t)
 
     # overlay expected distribution
-    lines!(bin_edges, rhat.*exp.(-rhat*bin_edges), color = :salmon1, linewidth = 2)
+    Exponential_expected = rhat.*exp.(-rhat*bin_centres)
+    lines!(bin_centres, Exponential_expected, color = :salmon1, linewidth = 2, label = "Expected")
 
+    # overlay fitted
+    param, KLD_fitted = fit_Exponential(bin_centres, P_bin) # fit model
+    Exponential_fitted = pdf(Exponential(param...), bin_centres)
+
+    lines!(bin_centres, Exponential_fitted, linewidth = 1, color = :blue, label = "Fitted")
+
+    axislegend(ax)
     display(F)
 
-end
+    KLD_expected = KLD(bin_centres, bin_counts/sum(bin_counts), Exponential_expected/sum(Exponential_expected))
 
-
-
-
-
-# # Compare Expsim histogram to Exponential 
-# function test_Exponential_sample(tau::Float64, dt::Float64=DEFAULT_SIMULATION_DT)
-
-#     N = 5000  # sample size
-#     interval = zeros(N)
-#     (m, s, threshold) = Exponential_sample(interval, tau)
-
-#     F = Figure()
-#     ax = Axis(F[1,1])
-#     hist!(interval, normalization=:pdf, bins=200)
-
-#      #   label=@sprintf "Threshold trigger (%.2f, %.2f, %.2f)" m s threshold)
-#     t = 0.0:dt:(maximum(interval)*1.2)
-#     lines!(t, exp.(-t ./ tau) ./ tau, linewidth=2.5, color = :red)
-#      #   label=@sprintf "Exponential (τ = %.2f)" tau)  #pdf(InverseGaussian(mu, lambda), t))
-#     xlims!(0.0, t[end])
-#     display(F)
-#     text!(ax, 0.25*t[end], 0.85*ylims(ax)[end], color = :dodgerblue,
-#         text =@sprintf "Threshold trigger (μ = %.2f, σ = %.2f, Thr = %.2f; τ = %.2f)" m s threshold tau)
-#     text!(ax, 0.5*t[end], 0.75*ylims(ax)[end], color = :salmon1,
-#         text =@sprintf "Exponential (τ = %.2f)" tau)
-#    # @infiltrate
-# end
-
-
-# Inhomogeneous Poisson by threshold-crossing with time-varying noise
-# N = number of intervals
-function inhomogenousPoisson_test(N, play_audio::Bool = false)
-
-    tau = 0.1     # mean interval at mean stimulus level (s)
-
-    f = 0.25    # stimulus frequency
-    a = 0.25    # amplitude
-    m0 = 10.0   # mean
-    s = 1.0     # noise s.d.
-    q(t) = m0 + a * sin(2 * pi * f * t)  # stimulus waveform
-
-    # sampling interval for GLR
-    dt = .001
-
-    I = zeros(N) # space for intervals
-
-    # trigger level with N(m0,1.0) input noise
-    trigger = TriggerThreshold_from_PoissonTau(m0, s, tau)
-
-    ThresholdTrigger_simulate(I, q, s, trigger)
-
-    spt = cumsum(I)   # spike times from intervals
-
-    #bs = s2b(spt, 1.0e-4)  # binary representation at 10KHz
-    # soundsc(bs, 10000)     # play audio at 10KHz
-
-    (T,r) = GLR(spt, [0.5], dt)
-    
-    #@infiltrate
-    
-    # reverse-engineer τ from q
-    r0 = [1.0/PoissonTau_from_ThresholdTrigger(q(t), s, trigger, DEFAULT_SIMULATION_DT) for t in T]
-
-    F = Figure(size = (1600, 400))
-    ax = Axis(F[1,1])
-
-        ax.title = "Poisson Simulation"
-    
-    splot!(ax,spt)
-    lines!(T, r)
-    lines!(T, [q(x) for x in T])
-    lines!(T, r0, color = :salmon1)
-
-    display(F)
-
-    if play_audio
-        bs = s2b(spt, 1.0e-4)  # binary representation at 10KHz
-        soundsc(bs, 1.0e4) 
-    end
+    return bin_counts, bin_centres, KLD_expected, KLD_fitted
 
 end
 
@@ -163,10 +96,11 @@ end
 # generates intervals matching specified Wald distribution.
 # Plots the ISI distribution overlaid with specified and fitted Wald models 
 # The good news is that we get a pretty good fit to the specified model with only a few intervals.
-function Check_Wald_Distribution(Waldparam::Tuple{Float64, Float64}, N::Int64 = 5000)
+function check_Wald_distribution(Waldparam::Tuple{Float64, Float64}, N::Int64 = 5000, 
+    dt::Float64=DEFAULT_SIMULATION_DT)
 
     #  spontaneous spikes
-    st = spiketimes_timevaryingWald(Waldparam, t->0.0, N);
+    st = spiketimes_timevaryingWald(Waldparam, t->0.0, N, dt);
 
 
     F = Figure(size=(1600, 400))
@@ -182,26 +116,84 @@ function Check_Wald_Distribution(Waldparam::Tuple{Float64, Float64}, N::Int64 = 
     # Frequency histogram edges and counts
     bin_edges = H.edges[1]
     bin_width = bin_edges[2]-bin_edges[1]
-    bin_counts = H.weights./(sum(H.weights)/bin_width)
+    bin_counts = H.weights./(sum(H.weights)*bin_width)
+    bin_centres = collect((bin_edges[2:end] + bin_edges[1:(end-1)])*0.5)
+    P_bin = bin_counts/sum(bin_counts)    # probability distribution 
 
     hist!(ax, ISI, bins=bin_edges, normalization = :pdf)
 
-    # overlay pdf
-    Wald_pdf = t-> pdf(InverseGaussian(Waldparam...), t)
-    lines!(bin_edges, Wald_pdf(bin_edges), linewidth = 3, color = :salmon1, label = "Specified")
+    # overlay pdf of specified distribution
+    Wald_specified = pdf.(InverseGaussian(Waldparam...), bin_centres)
+    lines!(bin_centres, Wald_specified, linewidth = 3, color = :salmon1, label = "Specified")
 
-    # plot fitted Wald
-    (μ_hat, λ_hat) = fit_Wald(bin_edges, bin_counts) # fit by EM
-    lines!(bin_edges, pdf(InverseGaussian(μ_hat, λ_hat), bin_edges), linewidth = 1, color = :blue, label = "Fitted")
+    # overlay fitted Wald
+    param, KLD_fitted = fit_Wald(bin_centres, P_bin) # fit Wald model
+    Wald_fitted = pdf(InverseGaussian(param...), bin_centres)
+    lines!(bin_centres, Wald_fitted, linewidth = 1, color = :blue, label = "Fitted")
  
     axislegend(ax)
     display(F)
 
-    (bin_counts, bin_edges)
-    
+    #@infiltrate
+
+    KLD_specified = KLD(bin_centres, bin_counts/sum(bin_counts), Wald_specified/sum(Wald_specified))
+
+    return bin_counts, bin_centres, KLD_specified, KLD_fitted
+
 end
 
+# show that Exwald neuron model with parameters (μ, λ, τ) generates intervals 
+# with distribution Exwald(μ, λ, τ) when input (cupula deflection) is 0.0.
+# Plots the ISI distribution overlaid with specified and fitted  models 
+function check_Exwald_neuron_spontaneous_distribution(EXWparam::Tuple{Float64, Float64,Float64}, N::Int64 = 5000, 
+    dt::Float64=DEFAULT_SIMULATION_DT)
 
+
+    exwald_neuron = make_Exwald_neuron(EXWparam, dt)
+
+    # input = cupula deflection = 0.0
+    δ = t-> 0.0
+
+    # generate N intervals 
+    ISI  = interspike_intervals(exwald_neuron, δ, N, dt)
+
+
+
+    F = Figure(size=(1600, 400))
+    ax = Axis(F[1,1])
+
+    ax.title = "Exwald distribution from Neuron model"
+
+    # frequency histogram
+    T = maximum(ISI)  # longest interval 
+    bw = T/max(Int(round(N/500)), 128)   # at least 32 bins
+    bin_edges = 0.0:bw:T
+    H = fit(Histogram, ISI, bin_edges) 
+
+    # Frequency histogram edges and counts
+    bin_counts = H.weights./(sum(H.weights)*bw)
+    bin_centres = collect((bin_edges[2:end] + bin_edges[1:(end-1)])*0.5)
+    P_bin = bin_counts/sum(bin_counts)    # probability distribution for KLD
+
+    hist!(ax, ISI, bins=bin_edges, normalization = :pdf)
+
+    # overlay pdf of specified distribution
+    Exwald_specified = Exwaldpdf(EXWparam..., bin_centres)
+    lines!(bin_centres, Exwald_specified, linewidth = 3, color = :salmon1, label = "Specified")
+
+    # # overlay fitted Wald
+    # param, KLD_fitted = fit_Exwald(bin_centres, P_bin) # fit Exwald model
+    # Exwald_fitted = Exwaldpdf(param..., bin_centres)
+    # lines!(bin_centres, Exwald_fitted, linewidth = 1, color = :blue, label = "Fitted")
+ 
+    axislegend(ax)
+    display(F)
+
+  #  KLD_specified = KLD(bin_centres, bin_counts/sum(bin_counts), Exwald_specified/sum(Exwald_specified))
+
+    return ISI, bin_counts, bin_centres #, KLD_specified  #, KLD_fitted
+
+end
 
 # test Exwald sample generated by adding samples from Exponential and Wald distributions
 function test_Exwald_sample_sum(mu, lambda, tau)
@@ -538,7 +530,6 @@ function demo_Fractional_Steinhausen_Exwald_Neuron_sin(
     return (spt, collect(tr), r, w_tr, wdot_tr, Fig)
 end
 
-
 # demo dynamic Steinhausen-Exwald neuron with sinusoidal stimulus
 # frequency f (Hz), maxw = peak angular velocity 
 function demo_Fractional_Steinhausen_Exwald_Neuron_blg(
@@ -619,6 +610,7 @@ function demo_Fractional_Steinhausen_Exwald_Neuron_blg(
     # angular velocity and acceleration (at sample times)
     return (spt, collect(tr), r, velocity, acceleration)
 end
+
 
 # Plot ISI distribution for Exwald neuron at specified phases of sinusoidal stimulus
 # overlay the model-predicted Exwald for each phase

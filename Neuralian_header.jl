@@ -6,7 +6,7 @@ using Distributions, GLMakie, ImageFiltering,
     WAV, Sound, PortAudio, SampledSignals, 
     Printf, MLStyle, SpecialFunctions, Random, MAT, 
     BasicInterpolators, DSP, StatsBase,
-    Infiltrator, Colors
+    Infiltrator, Revise, Colors
 
 include("Neuralian_utilities.jl")
 include("Neuralian_models.jl")

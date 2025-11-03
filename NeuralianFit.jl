@@ -192,53 +192,127 @@ function fit_Sinewave_to_Firingrate(r::Vector{Float64}, f::Float64, dt::Float64)
     (pest, minf, ret)
 
 end
-using Distributions
 
 
-# fit Wald distribution to normalized histogram data
-function fit_Wald(bin_edges, bin_counts; max_iter=100, tol=1e-6)
+# fit Exponential distribution to normalized histogram data, P_bin = bin_count*binwidth
+# returns parameter τ
+function fit_Exponential(bin_centre::Vector{Float64}, P_bin::Vector{Float64}; max_iter=100, tol=1e-6)
 
-    # Initialize with midpoint estimates
-    midpoints = (bin_edges[1:end-1] .+ bin_edges[2:end]) ./ 2
-    n_total = sum(bin_counts)
+    @assert isapprox(sum(P_bin), 1.0, atol = 1.0e-6)  "probabilities must sum to 1"
+
+    binwidth = bin_centre[2] - bin_centre[1]
     
-    μ = sum(midpoints .* bin_counts) / n_total
-    λ = μ^3 / sum((midpoints .- μ).^2 .* bin_counts) * n_total
+    # initial estimate is average interval length
+    τ = sum(bin_centre .* P_bin)
+    pInit = [τ]
     
-    for iter in 1:max_iter
-        μ_old, λ_old = μ, λ
-        
-        # E-step: Compute expected values within each interval
-        expected_values = zeros(length(bin_counts))
-        expected_inv_values = zeros(length(bin_counts))
-        
-        dist = InverseGaussian(μ, λ)
-        
-        for i in 1:length(bin_counts)
-            if bin_counts[i] > 0
-                # Approximate expected value in interval using midpoint
-                # (More sophisticated: numerical integration)
-                lower, upper = bin_edges[i], bin_edges[i+1]
-                
-                # Simple approximation: use midpoint
-                expected_values[i] = midpoints[i]
-                expected_inv_values[i] = 1 / midpoints[i]
-            end
-        end
-        
-        # M-step: Update parameters
-        μ = sum(expected_values .* bin_counts) / n_total
-        
-        E_inv = sum(expected_inv_values .* bin_counts) / n_total
-        λ = 1 / (E_inv - 1/μ)
-        
-        # Check convergence
-        if abs(μ - μ_old) < tol && abs(λ - λ_old) < tol
-            println("Converged in $iter iterations")
-            break
-        end
-    end
-    
-    return μ, λ
+    grad = zeros(Float64, length(pInit))   # required input to fitting code but not used
+
+    # Goodness of fit is mean squared error
+    # SumSquaredError = (param, grad) -> sum( (bin_count - pdf.(InverseGaussian(param...), bincentre)).^2)
+
+    # Goodness of fit is Kullback-Leibler divergence
+    # nb max.() kluge because pdf.() returns < 0.0 for some params (not my bug)
+    dist = param -> 
+        pdf.(Exponential(param...), bin_centre)/sum(pdf.(Exponential(param...), bin_centre))
+    KL_divergence = (param, grad) -> KLD(bin_centre, P_bin, dist(param))
+
+    #optStruc = Opt(:LN_NELDERMEAD,3)  # set up 3-parameter NLopt optimization problem
+
+    # set up optimization
+    optStruc = Opt(:LN_NELDERMEAD, length(pInit)) # :NL_PRAXIS
+    NLopt.min_objective!(optStruc, KL_divergence)      
+    NLopt.lower_bounds!(optStruc, zeros(Float64, length(pInit)))  # constrain parameters > 0
+    NLopt.xtol_rel!(optStruc, 1.0e-12)
+
+    #@infiltrate
+
+    (minf, pest, ret) = optimize(optStruc, pInit)
+    #println(pest, "    ", pInit)
+
+    #@infiltrate
+    return pest, minf
 end
 
+
+# fit Wald distribution to normalized histogram data, P_bin = bin_count*binwidth
+# returns parameters μ, λ
+function fit_Wald(bin_centre::Vector{Float64}, P_bin::Vector{Float64}; max_iter=100, tol=1e-6)
+
+    @assert isapprox(sum(P_bin), 1.0, atol = 1.0e-6)  "probabilities must sum to 1"
+
+    binwidth = bin_centre[2] - bin_centre[1]
+    
+    # initial estimates from summary stats
+    μ = sum(bin_centre .* P_bin)
+    V = sum(P_bin.*bin_centre.^2) - μ^2
+    λ = μ^3 / V
+    pInit = [μ, λ]
+    
+    grad = zeros(Float64, length(pInit))   # required input to fitting code but not used
+
+    # Goodness of fit is mean squared error
+    # SumSquaredError = (param, grad) -> sum( (bin_count - pdf.(InverseGaussian(param...), bincentre)).^2)
+
+    # Goodness of fit is Kullback-Leibler divergence
+    # nb max.() kluge because pdf.() returns < 0.0 for some params (not my bug)
+    dist = param -> max.(0.0, 
+        pdf.(InverseGaussian(param...), bin_centre)/sum(pdf.(InverseGaussian(param...), bin_centre)))
+    KL_divergence = (param, grad) -> KLD(bin_centre, P_bin, dist(param))
+
+    #optStruc = Opt(:LN_NELDERMEAD,3)  # set up 3-parameter NLopt optimization problem
+
+    # set up optimization
+    optStruc = Opt(:LN_PRAXIS, length(pInit)) 
+    NLopt.min_objective!(optStruc, KL_divergence)      
+    NLopt.lower_bounds!(optStruc, zeros(Float64, length(pInit)))  # constrain parameters > 0
+    NLopt.xtol_rel!(optStruc, 1.0e-12)
+
+    (minf, pest, ret) = optimize(optStruc, pInit)
+    #println(pest, "    ", pInit)
+
+    #@infiltrate
+    return pest, minf
+end
+
+
+# fit Wald distribution to normalized histogram data, P_bin = bin_count*binwidth
+# returns parameters μ, λ
+function fit_Exwald(bin_centre::Vector{Float64}, P_bin::Vector{Float64}; max_iter=100, tol=1e-6)
+
+    @assert isapprox(sum(P_bin), 1.0, atol = 1.0e-6)  "probabilities must sum to 1"
+
+    binwidth = bin_centre[2] - bin_centre[1]
+    
+    # initial estimates from summary stats
+    # divide average interval into halves avg = μ + τ
+    avg = sum(bin_centre .* P_bin)
+    μ = avg/2.0
+    τ = avg/2.0
+    V = sum(P_bin.*bin_centre.^2) - μ^2
+    λ = μ^3 / V
+    pInit = [μ, λ, τ]
+    
+    grad = zeros(Float64, length(pInit))   # required input to fitting code but not used
+
+    # Goodness of fit is mean squared error
+    # SumSquaredError = (param, grad) -> sum( (bin_count - pdf.(InverseGaussian(param...), bincentre)).^2)
+
+    # Goodness of fit is Kullback-Leibler divergence
+    dist = param -> Exwaldpdf(param..., bin_centre)/sum(Exwaldpdf(param..., bin_centre))
+    KL_divergence = (param, grad) -> KLD(bin_centre, P_bin, dist(param))
+
+    #optStruc = Opt(:LN_NELDERMEAD,3)  # set up 3-parameter NLopt optimization problem
+
+    # set up optimization
+    optStruc = Opt(:LN_PRAXIS, length(pInit)) 
+    NLopt.min_objective!(optStruc, KL_divergence)      
+    NLopt.lower_bounds!(optStruc, zeros(Float64, length(pInit)))  # constrain parameters > 0
+    NLopt.xtol_rel!(optStruc, 1.0e-12)
+
+    (minf, pest, ret) = optimize(optStruc, pInit)
+    #println(pest, "    ", pInit)
+
+    #@infiltrate
+    return pest, minf
+end
