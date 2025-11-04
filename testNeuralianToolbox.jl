@@ -81,7 +81,7 @@ function check_inhomogeneous_Poisson_distribution()
     param, KLD_fitted = fit_Exponential(bin_centres, P_bin) # fit model
     Exponential_fitted = pdf(Exponential(param...), bin_centres)
 
-    lines!(bin_centres, Exponential_fitted, linewidth = 1, color = :blue, label = "Fitted")
+    lines!(bin_centres, Exponential_fitted, linewidth = 2, color = :darkolivegreen, label = "Fitted")
 
     axislegend(ax)
     display(F)
@@ -165,7 +165,7 @@ function check_Exwald_neuron_spontaneous_distribution(EXWparam::Tuple{Float64, F
     ax.title = "Exwald distribution from Neuron model"
 
     # frequency histogram
-    T = maximum(ISI)  # longest interval 
+    T = 1.5*maximum(ISI)  # longest interval 
     bw = T/max(Int(round(N/500)), 128)   # at least 32 bins
     bin_edges = 0.0:bw:T
     H = fit(Histogram, ISI, bin_edges) 
@@ -178,20 +178,22 @@ function check_Exwald_neuron_spontaneous_distribution(EXWparam::Tuple{Float64, F
     hist!(ax, ISI, bins=bin_edges, normalization = :pdf)
 
     # overlay pdf of specified distribution
-    Exwald_specified = Exwaldpdf(EXWparam..., bin_centres)
-    lines!(bin_centres, Exwald_specified, linewidth = 3, color = :salmon1, label = "Specified")
+    gw = 0.01*bw
+    grid = collect( 0.0:gw:T )
+    Exwald_specified = Exwaldpdf(EXWparam..., grid)
+    lines!(grid, Exwald_specified, linewidth = 5, color = :salmon1, label = "Specified")
 
-    # # overlay fitted Wald
-    # param, KLD_fitted = fit_Exwald(bin_centres, P_bin) # fit Exwald model
-    # Exwald_fitted = Exwaldpdf(param..., bin_centres)
-    # lines!(bin_centres, Exwald_fitted, linewidth = 1, color = :blue, label = "Fitted")
+    # overlay fitted Exwald
+    param, KLD_fitted = fit_Exwald(bin_centres, bin_counts) # fit Exwald model
+    Exwald_fitted = Exwaldpdf(param..., grid)
+    lines!(grid, Exwald_fitted, linewidth = 5, color = :orchid4, label = "Fitted")
  
     axislegend(ax)
     display(F)
 
-  #  KLD_specified = KLD(bin_centres, bin_counts/sum(bin_counts), Exwald_specified/sum(Exwald_specified))
+    KLD_specified = KLD(bin_centres, P_bin, Exwaldpdf(EXWparam..., bin_centres, true))
 
-    return ISI, bin_counts, bin_centres #, KLD_specified  #, KLD_fitted
+    return EXWparam, param, KLD_specified, KLD_fitted
 
 end
 

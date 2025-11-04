@@ -127,19 +127,19 @@ function spiketimes2mp3(spiketime::Vector{Float64}, fileName::String="spiketrain
 end
 
 # Kullback-Leibler divergence from p(x) to q(x)
-function KLD(x::Vector{Float64}, p::Vector{Float64}, q::Vector{Float64}, ignoretail::Float64 = 1.0e-4)
+function KLD(x::Vector{Float64}, p::Vector{Float64}, q::Vector{Float64})
 
     @assert length(x)==length(p)==length(q)  "x, p and q must be the same length"
     @assert all(p .>= 0.0)                      "p must be non-negative"
-    @assert all(q .> 0.0)                      "q must be non-negative"
+    @assert all(q .>= 0.0)                       "q must be positive"
     @assert isapprox(sum(p), 1.0, atol = 1.0e-6)  "p must sum to 1"
     @assert isapprox(sum(q), 1.0, atol = 1.0e-6)  "q must sum to 1"
 
+
     D = 0.0
     for i in 1:length(x)
-        ΔD = p[i]*log(p[i]/q[i])
-        if ΔD<Inf
-                D += ΔD
+        if p[i] > 0.0
+            D += p[i]*log(p[i]/q[i])
         end
     end
 
@@ -167,16 +167,8 @@ end
 # Exwald pdf at t (From Schwarz (2002) DOI: 10.1081/STA-120017215)
 function Exwaldpdf(mu::Float64, lambda::Float64, tau::Float64, t::Float64)
 
-    @assert mu > 0.0        "mu must be > 0.0"
     @assert lambda > 0.0    "lambda must be > 0.0"
-    @assert tau > 0.0       "tau must be > 0.0"
     @assert t >= 0.0         "Exwald undefined for t < 0.0"
-
-
-    # easy special case
-    if t == 0.0
-        return 0.0
-    end
 
     # use Schwarz (2002) notation to make it easier to check formulas
     # drift-diffusion process with drift rate μ, noise s.d. sigma, barrier height L = 1.0
@@ -186,167 +178,71 @@ function Exwaldpdf(mu::Float64, lambda::Float64, tau::Float64, t::Float64)
     # s = evaluation point
     s = t
 
+    # case μ² ≥ 2λ sigma^2 (Schwarz Section 3.1 p2118)
+    disc = μ^2 - 2.0*λ*sigma^2  
+
+    # Special cases
+
+    # easy
+    if t == 0.0
+        return 0.0
+    end
+
+    # if tau <= 0.0 return Wald
+    if tau <= 0.0 
+        return pdf(InverseGaussian(mu, lambda), t)
+    end
+
+    # if Wald parameters are invalid return Exponential
+    if mu <= 0.0  || lambda <= 0.0  #|| L*μ/sigma^2 > 700.
+        return pdf(Exponential(tau), t)
+    end
+
+
     # α = sqrt(L^2/(2.0*sigma^2))
     # β = sqrt((μ^2 - 2.0*λ*sigma^2)/(2.0*sigma^2))
 
-    # case μ² ≥ 2λ sigma^2 (Schwarz Section 3.1 p2118)
-    disc = μ^2 - 2.0*λ*sigma^2  
+    # case  μ² ≥ 2λ sigma^2 (Schwarz Section 3.1 p2118)
     if disc > 0.0
-        k = sqrt(disc)
+        k = sqrt(disc) 
+       # println(μ-k, ", ", μ + k)
 
-        f = λ*exp(-λ*s + L*μ/sigma^2)*( exp(-k*L/sigma^2)*cdf(Normal(0.0, 1.0), (k*s-L)/(sigma*sqrt(s))) 
-           + exp(k*L/sigma^2)*cdf(Normal(0.0, 1.0), -(k*s+L)/(sigma*sqrt(s))) 
-                        )
+        f = λ*exp(-λ*s)*exp(L*(μ-k)/sigma^2)*cdf(Normal(0.0, 1.0), (k*s-L)/(sigma*sqrt(s))) 
+           + λ*exp(-λ*s)exp(L*(μ+k)/sigma^2)*cdf(Normal(0.0, 1.0), -(k*s+L)/(sigma*sqrt(s))) 
+                    
+
+        # f = λ*exp(-λ*s + L*μ/sigma^2)*( exp(-k*L/sigma^2)*cdf(Normal(0.0, 1.0), (k*s-L)/(sigma*sqrt(s))) 
+        #    + exp(k*L/sigma^2)*cdf(Normal(0.0, 1.0), -(k*s+L)/(sigma*sqrt(s))) 
+        #                 )
+
+                         
     else # k2 < 0
         k = sqrt(-disc)
         f = λ*exp(-(L-μ*s)^2/(2.0*sigma^2*s))*real(Faddeeva_w(k*sqrt(s)/(sigma*sqrt(2.0)) + im*L/(sigma*sqrt(2.0*s))))
     end
 
+    # if isnan(f)
+    #     println("k=", k, ", λ= ", λ, ", μ=", μ, ", s=", s, ", L=", L, ", sigma=", sigma )
+    # end
+
     return f
 end
 
-function Schwarz_waldcdf(x,mu,sigma,a)
-# Cumulative function of the Wald distribution.
-#
-#USAGE: Y=WALDCDF(X,MU,SIGMA,A)
-#  
-#Parameters:
-#      mu = Drift Rate (The mean gain of information per unit of time)
-#   sigma = Standard Deviation of Drift Rate.
-#       a = Evidence Criterion (Location of absorbing boundary)
-#
-# See also WALDPDF, EXWALDPDF, EXWALDCDF, EXWALDFIT, EXWALDINV, EXWALDLIKE,
-#          EXWALDCORR, EXWALDSSQ
+# Exwald pdf at vector of times
+# returns probability density at t 
+# or probability in bins centred at t if P==true
+function Exwaldpdf(mu::Float64, lambda::Float64, tau::Float64, t::Vector{Float64}, P::Bool=false)
 
-
-
-# Adapted from the equations presented in:
-#   Schwarz, W. (2001). The ex-Wald distribution as a descriptive model of
-#   response time. Behavior Research Methods, Instruments, & Computers,
-# 33(4), 457-469.
-#
-# Original Code from:
-#  Wolf Schwarz
-#  Dept. of Psychology
-#   University of Potsdam
-#  wschwarz@rz.uni-potsdam.de
-#
-# Adapted for MATLAB by: 
-#   Evan McHughes Palmer
-#   Visual Attention Laboratory
-#  Harvard Medical School
-#   palmer@search.bwh.harvard.edu
-#   
-#   September 19, 2005
-
-
-    # ERROR CHECKING
-
-    # if sum(x<0)>0
-    #     error('x-values cannot be negative.');
-    # else if mu<0
-    #     error('mu must be greater than 0');
-    # else if a<0
-    #     error('a must be greater than 0');
-    # else if sigma<0
-    #     error('sigma must be greater than 0');
-    # end
-
-    v=sigma^2;
-
-    hi_ix=findall((-(mu*x+a)/(sigma*sqrt(x))) .>  -5.50);
-    y1[hi_ix] = cdf(Normal(0.,1.), ( (mu.*x(hi_ix)-a)./(sigma.*sqrt(x(hi_ix)))) );
-    y2[hi_ix] =  cdf(Normal(0.,1.), (-(mu.*x(hi_ix)+a)./(sigma.*sqrt(x(hi_ix)))) );
-    y[hi_ix]  =  y1[hi_ix]+y2[hi_ix]*exp(2.0*mu*a/v);
-
-    lo_ix=findall((-(mu.*x+a)./(sigma.*sqrt(x))) .<= -5.50);
-    y1[lo_ix] = cdf(Normal(0., 1.), ((mu.*x(lo_ix)-a)./(sigma.*sqrt(x(lo_ix)))))
-    q2[lo_ix] = (mu*x[lo_ix]-a)/(sigma*sqrt(x[lo_ix]));
-    y2[lo_ix] = 1.0/(q1[lo_ix]*sqrt(2π));
-    y2[lo_ix] = y2[lo_ix]*exp(-0.5*q2[lo_ix]*q2[lo_ix]-0.94/(q1[lo_ix]*q1[lo_ix]));
-    y[lo_ix]  = y1[lo_ix] +y2[lo_ix];
-        
-    y[findall(x.==0)] = 0.0;
-
-    return y 
-
-end
-
-function Schwarz_exwaldpdf(x,mu,sigma,a,gamma)
-# Density function of the ex-Wald distribution.
-# Parameters:
-#      mu = Drift Rate (The mean gain of information per unit of time)
-#   sigma = Standard Deviation of Drift Rate (Typically set to 1)
-#       a = Evidence Criterion (Location of absorbing boundary)
-#   gamma = Mean/StDev of Exponential
-#
-# See also WALDPDF, WALDCDF, EXWALDCDF, EXWALDFIT, EXWALDINV, EXWALDLIKE,
-#          EXWALDCORR, EXWALDSSQ
-
-# Adapted from the equations presented in:
-#   Schwarz, W. (2001). The ex-Wald distribution as a descriptive model of
-#   response time. Behavior Research Methods, Instruments, & Computers,
-#   33(4), 457-469.
-#
-# Original Code from:
-#   Wolf Schwarz
-#  Dept. of Psychology
-#   University of Potsdam
-#   wschwarz@rz.uni-potsdam.de
-#
-#Adapted for MATLAB by: 
-# Evan McHughes Palmer
-#  Visual Attention Laboratory
-# Harvard Medical School
-# palmer@search.bwh.harvard.edu
-# 
-#  September 19, 2005
-
-#MGP try this:
-# mu1 = .005; tau = 1e-4; lambda = 2*mu1^2/tau*(1+.1); 
-# mu = 1; a = mu1; sigma = a/sqrt(lambda); gamma = 1/tau; 
-# t = 0:1e-5:.02; plot(t, exwaldpdf(t, mu, sigma, a, gamma), 'b')
-
-
-    # # ERROR CHECKING
-    # if sum(x<0)>0
-    #     error('x-values cannot be negative.');
-    # elseif mu<0
-    #     error('mu must be greater than 0');
-    # elseif a<0
-    #     error('a must be greater than 0');
-    # elseif sigma<0
-    #     error('sigma must be greater than 0');
-    # elseif gamma<0
-    #     error('gamma must be greater than 0');
-    # end
-
-    disk=mu^2-2*gamma*sigma^2;
-    v=sigma^2;
-
-    if disk>=0
-        h=disk^0.5;
-        y=waldcdf(x,h,v,a)*gamma*exp(-gamma*x+a*(mu-h)/v);
+    p = [Exwaldpdf(mu, lambda, tau, s) for s in t]
+    if P 
+        p /= sum(p)                  # normalize as distribution
     else
-        h=((a-mu*x)^2)/(2*v*x);
-        arg_x=sqrt(-disk);
-        arg_x=arg_x*sqrt(x)/(sigma*sqrt(2));
-        arg_y=a/(sigma*sqrt(2*x));
-        y=gamma*exp(-h)*real(Faddeeva_w(arg_x+arg_y));
+        p /= (sum(p))*(t[2] - t[1]) # normalize as density
     end
 
-    return y
-
+    return p
 end
 
-
-
-# Exwald pdf at vector of times
-function Exwaldpdf(mu::Float64, lambda::Float64, tau::Float64, t::Vector{Float64})
-
-    [Exwaldpdf(mu, lambda, tau, s) for s in t]
-
-end
 
 # Exwald pdf at vector of times
 function scaled_Exwaldpdf(mu::Float64, lambda::Float64, tau::Float64, t::Vector{Float64}, s::Float64)

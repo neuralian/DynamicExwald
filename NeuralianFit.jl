@@ -1,6 +1,7 @@
 # Neuralian fitting Functions
 # MGP 2024
-using NLopt
+using Optimization
+using OptimizationNLopt
 
 
 
@@ -245,7 +246,7 @@ function fit_Wald(bin_centre::Vector{Float64}, P_bin::Vector{Float64}; max_iter=
     
     # initial estimates from summary stats
     μ = sum(bin_centre .* P_bin)
-    V = sum(P_bin.*bin_centre.^2) - μ^2
+    V = sum(P_bin.*bin_centre.^2) - μ^2  
     λ = μ^3 / V
     pInit = [μ, λ]
     
@@ -276,22 +277,28 @@ function fit_Wald(bin_centre::Vector{Float64}, P_bin::Vector{Float64}; max_iter=
 end
 
 
-# fit Wald distribution to normalized histogram data, P_bin = bin_count*binwidth
-# returns parameters μ, λ
-function fit_Exwald(bin_centre::Vector{Float64}, P_bin::Vector{Float64}; max_iter=100, tol=1e-6)
-
-    @assert isapprox(sum(P_bin), 1.0, atol = 1.0e-6)  "probabilities must sum to 1"
+# fit Exwald distribution to histogram data
+# returns parameters μ, λ, τ
+function fit_Exwald(bin_centre::Vector{Float64}, bin_count::Vector{Float64}; max_iter=100, tol=1e-6)
 
     binwidth = bin_centre[2] - bin_centre[1]
+    P_bin = bin_count/sum(bin_count)   # 
     
     # initial estimates from summary stats
     # divide average interval into halves avg = μ + τ
     avg = sum(bin_centre .* P_bin)
-    μ = avg/2.0
-    τ = avg/2.0
-    V = sum(P_bin.*bin_centre.^2) - μ^2
-    λ = μ^3 / V
-    pInit = [μ, λ, τ]
+    V = sum(P_bin.*bin_centre.^2) - avg^2  # data variance = E[x^2] - E[x]^2
+    w = min(sqrt(V)/avg, 0.95)
+    τ = w*avg
+    μ = (1.0-w)*avg
+    # set initial λ>>λ_w because if λ is large there is a local deep pocket in the objective function  
+    # around its value (corresponding Exwald with steep leading edge). Local seach algorithms
+    # have trouble finding small holes in the objective function unless they start there.  
+    λ = 25.0*μ^3 / (V*(1-w)^2)
+    pInit = [μ, λ, τ] 
+    println(pInit)
+    LB = [0., 0., 0.]  # lower bounds
+    UB = [avg, 10.0*λ, avg ]    # upper bounds
     
     grad = zeros(Float64, length(pInit))   # required input to fitting code but not used
 
@@ -299,20 +306,22 @@ function fit_Exwald(bin_centre::Vector{Float64}, P_bin::Vector{Float64}; max_ite
     # SumSquaredError = (param, grad) -> sum( (bin_count - pdf.(InverseGaussian(param...), bincentre)).^2)
 
     # Goodness of fit is Kullback-Leibler divergence
-    dist = param -> Exwaldpdf(param..., bin_centre)/sum(Exwaldpdf(param..., bin_centre))
+    dist = param -> Exwaldpdf(abs(param[1]), abs(param[2]), abs(param[3]), bin_centre, true)
     KL_divergence = (param, grad) -> KLD(bin_centre, P_bin, dist(param))
 
     #optStruc = Opt(:LN_NELDERMEAD,3)  # set up 3-parameter NLopt optimization problem
 
     # set up optimization
-    optStruc = Opt(:LN_PRAXIS, length(pInit)) 
-    NLopt.min_objective!(optStruc, KL_divergence)      
-    NLopt.lower_bounds!(optStruc, zeros(Float64, length(pInit)))  # constrain parameters > 0
-    NLopt.xtol_rel!(optStruc, 1.0e-12)
-
-    (minf, pest, ret) = optimize(optStruc, pInit)
+ #   optStruc = Opt(:LN_NELDERMEAD, length(pInit))  
+    # optStruc = Opt(:LN_PRAXIS, length(pInit)) 
+    # NLopt.min_objective!(optStruc, KL_divergence)      
+    # NLopt.lower_bounds!(optStruc, zeros(Float64, length(pInit)))  # constrain parameters > 0
+    # NLopt.xtol_abs!(optStruc, 1.0e-12)
+    f = OptimizationFunction(KL_divergence)
+    Prob = Optimization.OptimizationProblem(f, pInit, grad, lb=LB, ub = UB)
+    sol = solve(Prob, NLopt.LN_PRAXIS(), reltol = 1.0e-12)
     #println(pest, "    ", pInit)
 
     #@infiltrate
-    return pest, minf
+    return sol.u , sol.objective
 end
