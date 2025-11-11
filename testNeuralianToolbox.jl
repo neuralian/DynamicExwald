@@ -1234,37 +1234,57 @@ function demo_FSX_blg_statemap(blgParams, q::Float64, EXWparam, Nrep)
 end
 
 # demo Bayesian inference from spikes in simplest possible case 
-# where the world is in one of two possible states with two corresponding
-# distributions of observations
-function demo_Bayesian_Inference_from_Spikes(T::Float64, dt::Float64=DEFAULT_SIMULATION_DT)
+# where the world is in one of two possible states (static)
+# and there is one afferent neuron whose interval distribution differs between states.
+# Here the world is in state 1.
+function demo_Bayesian_infer_binary_state_from_spiketrain(T::Float64 = 1.0, dt::Float64=DEFAULT_SIMULATION_DT)
 
-    EXWparam_true = (.01, 1.0, 0.001)
-    EXWparam_alt =  (.011, 1.0, 0.001)
+    EXWparam_1 =  (.01, 1.0, 0.001)      # afferent interval distribution in state 1
+    EXWparam_2 =  (.01, 1.0, 0.00125)    # .. state 2
 
-    # sensory neuron produces a spike train parameterized by the true state
-    xneuron = make_Exwald_neuron(EXWparam_true, dt)
+    # 1 sensory afferent neuron 
+    afferent = make_Exwald_neuron(EXWparam_1, dt)
 
-    # secondary neurons compute the posterior distribution of world states
-    # given the observed spike times
-    Observer1, Normalizer1 = make_Bayesian_spike_decoder(EXWparam_true)
-    Observer2, Normalizer2 = make_Bayesian_spike_decoder(EXWparam_alt)
+    # 2 secondary Bayesian neurons 
+    # Each secondary neuron has one compartment
+    # neuron 1 likelihood corresponds to the afferent distribution
+    # neuron 2 likelihood is slightly different.
+    # We specify a vector of likelihood functions for each neuron, 
+    #   in this 1-compartment case each vector has length 1 and contains a tuple defining the likelihood.
+    # We specify connectivity from the afferent nerve as a vector of vectors containing indices of
+    #   neurons that project to each secondary neuron. In this example there is one afferent neuron
+    #   that projects to each secondary neuron.
+    update_map = make_Bayesian_neuron_map([[EXWparam_1], [EXWparam_2]], [[1], [1]])
 
     # Simulate spontaneous spiking up to time T
-    spt = spiketimes(xneuron, t->0.0, T, dt)[1]
+    spt = spiketimes(afferent, t->0.0, T, dt)[1]
+    N = length(spt)
 
-    # Infer source distribution (world state)
-    P = zeros(length(spt))  # will update posterior probability at each spike time
-    for i in 1:length(spt)
+    # Infer posterior distribution over world states at each spike time
+    p = Array{Float64}(undef, N, 2)   # 2 states, N intervals
+    for i in 1:N
 
-        # Bayes numerator updates and accumulate evidence
-        Evidence = Observer1(spt[i]) + Observer2(spt[i])  
-
-        # Q = 1-P so we don't bother to save it
-        P[i], Q = Normalizer1(Evidence), Normalizer2(Evidence)
+        # update map
+        p[i, :] = update_map(spt[i], 1)
 
     end
 
-    return spt, P 
+    F = Figure(size = (1200, 600))
+
+    ax1 = Axis(F[1,1], title = "Spike distributions")
+    D = 1.5*maximum(diff(spt))   # 1.5 x largest interval
+    t = collect((1:1000)*D/1000.0)
+    lines!(ax1, t, Exwaldpdf(EXWparam_1..., t))
+    lines!(ax1, t, Exwaldpdf(EXWparam_2..., t))
+
+    ax2 = Axis(F[1,2], title = "Inference from spikes", ylabel = "posterior probability")
+    lines!(ax2, spt, p[:,1])
+    lines!(ax2, spt, p[:,2])    
+    splot!(ax2, spt, .1)
+
+    display(F)
+
+    return F
 
 end
 
