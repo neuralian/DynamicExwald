@@ -2,10 +2,10 @@
 # loads libraries & toolboxes and sets globals
 # MGP 2024-25
 
-using Distributions, GLMakie, ImageFiltering, 
+using Distributions, CairoMakie, ImageFiltering, 
     WAV, Sound, PortAudio, SampledSignals, 
     Printf, MLStyle, SpecialFunctions, Random, MAT, 
-    BasicInterpolators, DSP, StatsBase,
+    BasicInterpolators, DSP, StatsBase, JLD2,
     Infiltrator, Revise, Colors
 
 include("Neuralian_utilities.jl")

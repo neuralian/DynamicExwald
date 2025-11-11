@@ -3,102 +3,6 @@
 using Optimization
 using OptimizationNLopt
 
-
-
-# fit Exwald parameters to vector of interspike intervals
-#   using maximum likelihood or minimum KL-divergence (Paulin, Pullar and Hoffman, 2024)
-# uses NLopt
-# returns (mu, lambda, tau)  (in units matching the input data, 
-#                             e.g. seconds if intervals are specified in seconds )
-function Fit_Exwald_to_ISI(ISI::Vector{Float64}, Pinit::Vector{Float64})
-
-
-    # likelihood function
-    grad = zeros(3)
-    LHD = (param, grad) -> sum(log.(Exwaldpdf(param[1], param[2], param[3], ISI))) #- (param[1]^2 + param[3]^2)
-
-    #@infiltrate
-
-    optStruc = Opt(:LN_PRAXIS, 3)   # set up 3-parameter NLopt optimization problem
-
-    optStruc.max_objective = LHD       # objective is to maximize likelihood
-
-    optStruc.lower_bounds = [0.0, 0.0, 0.0]   # constrain all parameters > 0
-    #optStruc.upper_bounds = [1.0, 25.0,5.0]
-
-    #optStruc.xtol_rel = 1e-12
-    optStruc.xtol_rel = 1.0e-16
-
-    Grad = zeros(3)  # dummy argument (uisng gradient free algorithm)
-    (maxf, pest, ret) = optimize(optStruc, Pinit)
-
-    (maxf, abs.(pest), ret)
-
-end
-
-# fit closest to spontaneous
-function Fit_Exwald_to_ISI(ISI::Vector{Float64}, spont::Vector{Float64}, Pinit::Vector{Float64})
-
-
-    # likelihood function
-    grad = zeros(3)
-    #w = [0.0, 100.0, .0]
-    LHD = (param, grad) -> sum(log.(Exwaldpdf(param[1]^2, param[2]^2, param[3]^2, ISI))) #- sum((w.*abs.(param-spont)./spont))
-
-    #@infiltrate
-
-    optStruc = Opt(:LN_NELDERMEAD, 3)   # set up 3-parameter NLopt optimization problem
-
-    optStruc.max_objective = LHD       # objective is to maximize likelihood
-
-    # optStruc.lower_bounds = [0.005, 0.01, 0.01]   # constrain all parameters > 0
-    # optStruc.upper_bounds = [.2,50.0, 1.0]
-
-    #optStruc.xtol_rel = 1e-12
-    optStruc.xtol_rel = 1.0e-16
-
-    Grad = zeros(3)  # dummy argument (uisng gradient free algorithm)
-    (maxf, pest, ret) = optimize(optStruc, Pinit)
-
-    println("pest: ",sqrt.(pest))
-
-    (maxf, sqrt.(pest), ret)
-
-
-end
-
-function Fit_scaled_Exwald_to_ISI(ISI::Vector{Float64}, Pinit::Vector{Float64}, s::Float64)
-
-    # scaling
-    Pinit[3] = Pinit[3] / s
-
-    # likelihood function
-    grad = zeros(3)
-    LHD = (param, grad) -> sum(log.(scaled_Exwaldpdf(param[1], param[2], param[3], ISI, s)))
-
-    #@infiltrate
-
-    optStruc = Opt(:LN_PRAXIS, 3)   # set up 3-parameter NLopt optimization problem
-
-
-
-    optStruc.max_objective = LHD       # objective is to maximize likelihood
-
-    optStruc.lower_bounds = [0.0, 0.0, 0.0]   # constrain all parameters > 0
-    #optStruc.upper_bounds = [1.0, 25.0,5.0]
-
-    #optStruc.xtol_rel = 1e-12
-    optStruc.xtol_rel = 1.0e-16
-
-    Grad = zeros(3)  # dummy argument (uisng gradient free algorithm)
-    (maxf, pest, ret) = optimize(optStruc, Pinit)
-
-    pest[3] = pest[3] * s
-
-    (maxf, pest, ret)
-
-end
-
 # Fit sine wave of frequency F /Hz to spike train (rate) 
 #   Nburn = number of cycles to drop at start of spiketrain
 #   N = number of periods to fit. 
@@ -288,17 +192,14 @@ function fit_Exwald(bin_centre::Vector{Float64}, bin_count::Vector{Float64}; max
     # divide average interval into halves avg = μ + τ
     avg = sum(bin_centre .* P_bin)
     V = sum(P_bin.*bin_centre.^2) - avg^2  # data variance = E[x^2] - E[x]^2
-    w = min(sqrt(V)/avg, 0.95)
+    cv = sqrt(V)/avg
+    w = min(cv, 0.95)
     τ = w*avg
     μ = (1.0-w)*avg
-    # set initial λ>>λ_w because if λ is large there is a local deep pocket in the objective function  
-    # around its value (corresponding Exwald with steep leading edge). Local seach algorithms
-    # have trouble finding small holes in the objective function unless they start there.  
-    λ = 25.0*μ^3 / (V*(1-w)^2)
-    pInit = [μ, λ, τ] 
-    println(pInit)
+    pInit = [μ, cv, τ] 
+    # println(pInit)
     LB = [0., 0., 0.]  # lower bounds
-    UB = [avg, 10.0*λ, avg ]    # upper bounds
+    UB = [avg, 10.0*cv, avg ]    # upper bounds
     
     grad = zeros(Float64, length(pInit))   # required input to fitting code but not used
 
@@ -306,7 +207,7 @@ function fit_Exwald(bin_centre::Vector{Float64}, bin_count::Vector{Float64}; max
     # SumSquaredError = (param, grad) -> sum( (bin_count - pdf.(InverseGaussian(param...), bincentre)).^2)
 
     # Goodness of fit is Kullback-Leibler divergence
-    dist = param -> Exwaldpdf(abs(param[1]), abs(param[2]), abs(param[3]), bin_centre, true)
+    dist = param -> Exwaldpdf_cv(abs(param[1]), abs(param[2]), abs(param[3]), bin_centre, true)
     KL_divergence = (param, grad) -> KLD(bin_centre, P_bin, dist(param))
 
     #optStruc = Opt(:LN_NELDERMEAD,3)  # set up 3-parameter NLopt optimization problem
@@ -320,7 +221,8 @@ function fit_Exwald(bin_centre::Vector{Float64}, bin_count::Vector{Float64}; max
     f = OptimizationFunction(KL_divergence)
     Prob = Optimization.OptimizationProblem(f, pInit, grad, lb=LB, ub = UB)
     sol = solve(Prob, NLopt.LN_PRAXIS(), reltol = 1.0e-12)
-    #println(pest, "    ", pInit)
+ 
+    fitted_param = (sol.u[1], sol.u[1]/sol.u[2]^2, sol.u[3])
 
     #@infiltrate
     return sol.u , sol.objective

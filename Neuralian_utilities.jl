@@ -198,10 +198,6 @@ function Exwaldpdf(mu::Float64, lambda::Float64, tau::Float64, t::Float64)
         return pdf(Exponential(tau), t)
     end
 
-
-    # α = sqrt(L^2/(2.0*sigma^2))
-    # β = sqrt((μ^2 - 2.0*λ*sigma^2)/(2.0*sigma^2))
-
     # case  μ² ≥ 2λ sigma^2 (Schwarz Section 3.1 p2118)
     if disc > 0.0
         k = sqrt(disc) 
@@ -209,24 +205,30 @@ function Exwaldpdf(mu::Float64, lambda::Float64, tau::Float64, t::Float64)
 
         f = λ*exp(-λ*s)*exp(L*(μ-k)/sigma^2)*cdf(Normal(0.0, 1.0), (k*s-L)/(sigma*sqrt(s))) 
            + λ*exp(-λ*s)exp(L*(μ+k)/sigma^2)*cdf(Normal(0.0, 1.0), -(k*s+L)/(sigma*sqrt(s))) 
-                    
-
-        # f = λ*exp(-λ*s + L*μ/sigma^2)*( exp(-k*L/sigma^2)*cdf(Normal(0.0, 1.0), (k*s-L)/(sigma*sqrt(s))) 
-        #    + exp(k*L/sigma^2)*cdf(Normal(0.0, 1.0), -(k*s+L)/(sigma*sqrt(s))) 
-        #                 )
-
-                         
+                              
     else # k2 < 0
         k = sqrt(-disc)
         f = λ*exp(-(L-μ*s)^2/(2.0*sigma^2*s))*real(Faddeeva_w(k*sqrt(s)/(sigma*sqrt(2.0)) + im*L/(sigma*sqrt(2.0*s))))
     end
 
-    # if isnan(f)
-    #     println("k=", k, ", λ= ", λ, ", μ=", μ, ", s=", s, ", L=", L, ", sigma=", sigma )
-    # end
-
     return f
 end
+
+# Exwald pdf parameterized by cv
+function Exwaldpdf_cv(mu::Float64, cv::Float64, tau::Float64, t::Float64)
+
+   Exwaldpdf(mu, mu/cv^2, tau, t)
+
+end
+
+# Exwald pdf parameterized by cv
+function Exwaldpdf_cv(mu::Float64, cv::Float64, tau::Float64, t::Vector{Float64}, P::Bool=false)
+
+   Exwaldpdf(mu, mu/cv^2, tau, t, P)
+
+end
+
+
 
 # Exwald pdf at vector of times
 # returns probability density at t 
@@ -242,7 +244,6 @@ function Exwaldpdf(mu::Float64, lambda::Float64, tau::Float64, t::Vector{Float64
 
     return p
 end
-
 
 # Exwald pdf at vector of times
 function scaled_Exwaldpdf(mu::Float64, lambda::Float64, tau::Float64, t::Vector{Float64}, s::Float64)
@@ -496,6 +497,23 @@ function setAxisBox(ax::Axis, x0::Float64, x1::Float64, y0::Float64, y1::Float64
     ax.scene.viewport[] = Rect(Vec(round(x0), round(x1)), Vec(round(y0), round(y1)))
 
 end
+
+# find nice value for single ytick on pdf plot
+function niceYtick(fmax::Float64, axlim::Float64)
+
+    # smallest power of 10 larger than xmax
+    y =  10.0^ceil(log10(fmax))
+    dy = y/10.0  
+
+    # step down until within axis limit
+    while y > fmax
+        y -= dy 
+    end
+
+    return y 
+end
+
+
 
 
 # Exwald model Bode gain and phase plots 
