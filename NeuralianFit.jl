@@ -183,32 +183,47 @@ end
 
 # fit Exwald distribution to histogram data
 # returns parameters μ, λ, τ
-function fit_Exwald(bin_centre::Vector{Float64}, bin_count::Vector{Float64}; max_iter=100, tol=1e-6)
+# f_bin is probability density at sample point, probability = f_bin*binwidth
+function fit_Exwald(bin_centre::Vector{Float64}, f_bin::Vector{Float64}; 
+                   pInit::Tuple{Float64, Float64, Float64} = (NaN, NaN, NaN), max_iter=100, tol=1e-6)
 
-    binwidth = bin_centre[2] - bin_centre[1]
-    P_bin = bin_count/sum(bin_count)   # 
+    bw = bin_centre[2] - bin_centre[1]
     
     # initial estimates from summary stats
     # divide average interval into halves avg = μ + τ
-    avg = sum(bin_centre .* P_bin)
-    V = sum(P_bin.*bin_centre.^2) - avg^2  # data variance = E[x^2] - E[x]^2
-    cv = sqrt(V)/avg
-    w = min(cv, 0.95)
-    τ = w*avg
-    μ = (1.0-w)*avg
-    pInit = [μ, cv, τ] 
-    # println(pInit)
-    LB = [0., 0., 0.]  # lower bounds
-    UB = [avg, 10.0*cv, avg ]    # upper bounds
+    if any(isnan.(pInit))
+        avg = sum(bw*bin_centre .* f_bin)
+        V = sum(bw*f_bin.*bin_centre.^2) - avg^2  # data variance = E[x^2] - E[x]^2
+        cv = sqrt(V)/avg
+        w = min(cv, 0.95)
+        τ = w*avg
+        μ = (1.0-w)*avg
+        λ = μ/cv^2
+        pInit = [μ, λ, τ]
+    end
+
+
+
+ #   println(pInit)
     
+    # parameter bounds 
+    avg = pInit[1]+pInit[3]
+    LB = [log(1.0e-4), log(1.0e-3), log(1.0e-6)]  # lower bounds (empirical, from PP&H data)
+    UB = [log(10.0*avg), log(100.0*pInit[2]), log(10.0*avg) ]    # upper bounds
+       
+    # initial parameters as vector
+    pInit = log.(collect(pInit))
+    println(" ", pInit)
+
     grad = zeros(Float64, length(pInit))   # required input to fitting code but not used
 
     # Goodness of fit is mean squared error
     # SumSquaredError = (param, grad) -> sum( (bin_count - pdf.(InverseGaussian(param...), bincentre)).^2)
 
     # Goodness of fit is Kullback-Leibler divergence
-    dist = param -> Exwaldpdf_cv(abs(param[1]), abs(param[2]), abs(param[3]), bin_centre, true)
-    KL_divergence = (param, grad) -> KLD(bin_centre, P_bin, dist(param))
+    dist = param -> Exwaldpdf(exp.(param)..., bin_centre, true) # renormalized Exwald
+    KL_divergence = (param, grad) -> KLD(f_bin, dist(param), bw)
+
 
     #optStruc = Opt(:LN_NELDERMEAD,3)  # set up 3-parameter NLopt optimization problem
 
@@ -220,10 +235,146 @@ function fit_Exwald(bin_centre::Vector{Float64}, bin_count::Vector{Float64}; max
     # NLopt.xtol_abs!(optStruc, 1.0e-12)
     f = OptimizationFunction(KL_divergence)
     Prob = Optimization.OptimizationProblem(f, pInit, grad, lb=LB, ub = UB)
-    sol = solve(Prob, NLopt.LN_PRAXIS(), reltol = 1.0e-12)
+    sol = solve(Prob, NLopt.LN_NELDERMEAD(), reltol = 1.0e-9)
  
-    fitted_param = (sol.u[1], sol.u[1]/sol.u[2]^2, sol.u[3])
+  #  fitted_param = (sol.u[1], sol.u[1]/sol.u[2]^2, sol.u[3])
 
     #@infiltrate
-    return sol.u , sol.objective
+    return tuple(exp.(sol.u)...) , sol.objective
+end
+
+# fit Exwald distribution to interval data
+# returns parameters μ, λ, τ
+function sfit_Exwald(ISI::Vector{Float64};
+            pInit::Tuple{Float64, Float64, Float64} = (NaN, NaN, NaN), max_iter=100, tol=1e-6)
+    
+    # initial estimates from summary stats
+    # divide average interval into halves avg = μ + τ
+    if any(isnan.(pInit))  # if pInit was not specified or is invalid
+        avg = mean(ISI)
+        V = mean(ISI.^2) - avg^2  # data variance = E[x^2] - E[x]^2
+        cv = sqrt(V)/avg
+        w = min(cv, 0.95)
+        τ = w*avg
+        μ = (1.0-w)*avg
+        λ = μ/cv^2
+        pInit = [μ, λ, τ]
+    end # otherwise pInit was passed as argument
+
+    # parameter bounds 
+    avg = pInit[1]+pInit[3]
+    LB = [log(1.0e-4), log(1.0e-3), log(1.0e-6)]  # lower bounds (empirical, from PP&H data)
+    UB = [log(10.0*avg), log(100.0*pInit[2]), log(10.0*avg) ]    # upper bounds
+       
+    # initial parameters as vector
+    pInit = log.(collect(pInit))
+    println(" ", pInit)
+
+    grad = zeros(Float64, length(pInit))   # required input to fitting code but not used
+
+    # Goodness of fit is mean squared error
+    # SumSquaredError = (param, grad) -> sum( (bin_count - pdf.(InverseGaussian(param...), bincentre)).^2)
+
+    # Goodness of fit is Kullback-Leibler divergence from data to model
+    # dist = param -> Exwaldpdf(exp.(param)..., bin_centre, true) # renormalized Exwald
+    # KL_divergence = (param, grad) -> KLD(f_bin, dist(param), bw)
+    KL_divergence = (param, grad) -> sKLD(ISI, d->Exwaldpdf(exp.(param)..., d) )
+
+
+    #optStruc = Opt(:LN_NELDERMEAD,3)  # set up 3-parameter NLopt optimization problem
+
+    # set up optimization
+ #   optStruc = Opt(:LN_NELDERMEAD, length(pInit))  
+    # optStruc = Opt(:LN_PRAXIS, length(pInit)) 
+    # NLopt.min_objective!(optStruc, KL_divergence)      
+    # NLopt.lower_bounds!(optStruc, zeros(Float64, length(pInit)))  # constrain parameters > 0
+    # NLopt.xtol_abs!(optStruc, 1.0e-12)
+    f = OptimizationFunction(KL_divergence)
+    Prob = Optimization.OptimizationProblem(f, pInit, grad, lb=LB, ub = UB)
+    sol = solve(Prob, NLopt.LN_NELDERMEAD(), reltol = 1.0e-9)
+ 
+  #  fitted_param = (sol.u[1], sol.u[1]/sol.u[2]^2, sol.u[3])
+
+    #@infiltrate
+    return tuple(exp.(sol.u)...) , sol.objective
+end
+
+
+# fit Exwald parameters to Ornstein-Uhlenbeck first passage time model
+# OU parameters are (μ, λ, τₘ) where τₘ is mean-reverting time constant 
+#                                      (= membrane time constant in LIF neuron)
+# Exwald parameters are (μ, λ, τₓ).
+# Fitting is done by generating N intervals from OU neuron & using fit_Exwald. 
+# pInit = specified initial parameters
+function fit_Exwald_to_OU(OUparam::Tuple{Float64, Float64, Float64}, N::Int64=10000, 
+                pInit::Tuple{Float64, Float64, Float64}=(NaN, NaN, NaN), 
+                timeout::Float64=1.0, dt::Float64=DEFAULT_SIMULATION_DT)
+
+    ouneuron, _ = make_OU_neuron(OUparam, dt) 
+    ISI = interspike_intervals(ouneuron, t->0.0, N) 
+    if length(ISI)<N  # timed out - ouneuron does not generate plausible intervals
+        return (NaN, NaN, NaN), NaN   # don't even try 
+    end
+
+#   #  println(", ", any(isnan.(f_bin)), ", ", any(isinf.(f_bin)), ", ", maximum(f_bin))
+#     EXWparam, ob = sfit_Exwald(ISI, pInit=pInit)
+
+#     return EXWparam, ob
+
+    avg = mean(ISI)
+   
+    # initial estimates from summary stats
+    # divide average interval into halves avg = μ + τ
+    if any(isnan.(pInit))  # if pInit was not specified or is invalid
+        V = mean(ISI.^2) - avg^2  # data variance = E[x^2] - E[x]^2
+        cv = sqrt(V)/avg
+        w = min(cv, 0.95)
+        τ = w*avg
+        μ = (1.0-w)*avg
+        λ = μ/cv^2
+        pInit = [μ, λ, τ]
+    end 
+
+    # if (avg > .1) || (avg < .01)  # rate > 100 or < 10
+    #     return (NaN, NaN, NaN), NaN
+    # else
+
+    # parameter bounds 
+    LB = [log(1.0e-5), log(1.0e-4), log(1.0e-7)]  # lower bounds (empirical, from PP&H data)
+    UB = [log(100.0*avg),  log(100.0*pInit[2]), log(100.0*avg) ]    # upper bounds
+       
+    # initial parameters as vector
+    pInit = log.(collect(pInit))
+    println(" ", pInit)
+
+    grad = zeros(Float64, length(pInit))   # required input to fitting code but not used
+
+    # Goodness of fit is mean squared error
+    # SumSquaredError = (param, grad) -> sum( (bin_count - pdf.(InverseGaussian(param...), bincentre)).^2)
+
+    # Goodness of fit is Kullback-Leibler divergence from data to model
+    # dist = param -> Exwaldpdf(exp.(param)..., bin_centre, true) # renormalized Exwald
+    # KL_divergence = (param, grad) -> KLD(f_bin, dist(param), bw)
+    KL_divergence = (param, grad) -> sKLD(ISI, d->Exwaldpdf(exp.(param)..., d) )
+
+
+    #optStruc = Opt(:LN_NELDERMEAD,3)  # set up 3-parameter NLopt optimization problem
+
+    # set up optimization
+ #   optStruc = Opt(:LN_NELDERMEAD, length(pInit))  
+    # optStruc = Opt(:LN_PRAXIS, length(pInit)) 
+    # NLopt.min_objective!(optStruc, KL_divergence)      
+    # NLopt.lower_bounds!(optStruc, zeros(Float64, length(pInit)))  # constrain parameters > 0
+    # NLopt.xtol_abs!(optStruc, 1.0e-12)
+    f = OptimizationFunction(KL_divergence)
+    Prob = Optimization.OptimizationProblem(f, pInit, grad, lb=LB, ub = UB)
+    sol = solve(Prob, NLopt.LN_PRAXIS(), reltol = 1.0e-9)
+ 
+  #  fitted_param = (sol.u[1], sol.u[1]/sol.u[2]^2, sol.u[3])
+
+    #@infiltrate
+    # end
+
+    return tuple(exp.(sol.u)...), sol.objective
+
 end

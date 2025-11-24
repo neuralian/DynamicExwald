@@ -433,6 +433,42 @@ function make_Exwald_neuron(EXW_param::Tuple{Float64, Float64, Float64}, dt::Flo
     return (exwald_neuron, EXW_param)
 end
 
+
+
+# returns neuron = (OU_neuron, OU_param) 
+# where neuron is a closure function to simulate Ornstein_Uhlenbeck_Drift(δ(t)) 
+# given cupula deflection δ(t), OU_param = (μ, λ, τ) is a tuple containing the neuron's parameters
+# closure returns true if the neuron spiked in current time interval, false otherwise
+function make_OU_neuron(OU_param::Tuple{Float64, Float64, Float64}, dt::Float64=DEFAULT_SIMULATION_DT)
+
+    # extract OU parameters
+    (mu, lambda, tau) = OU_param
+
+
+    # First passage time model parameters for τ = 0.0 (Inverse Gaussian/Wald model)
+    # with barrier height = 1.0
+    (v0, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda, "barrier", 1.0)
+
+    G = 1.0  # mean input to exwald components is v = v0 + G*δ
+    x = 0.0
+
+    function ou_neuron(δ::Function, t::Float64)
+        
+        dx = (-x/tau + v0 + G*δ(t))*dt + s * randn(1)[] * sqrt(dt)   # leaky-integrate noise
+        x = x + dx
+        if x >= barrier      
+            x -= barrier     # reset integral for next refractory period
+            return true
+        else
+            return false  # still refractory
+        end
+
+    end
+
+    return ou_neuron, OU_param
+end
+
+
 # closure hit = ddstep(t) takes a step in drift-diffusion process 
 # with time-varing mean drift speed r(t) = μ + f(t) 
 # and variance chosen to match specified IG(μ,λ) (Wald) distribution when f(t)=0.0 ("spontaneous").
@@ -566,11 +602,11 @@ function spiketimes(neuron::Tuple{Function, Tuple}, input::Function, T::Float64,
     return (spiketime[1:j], u)
 end
 
-# returns N interspike intervals from neuron responding to input(t) from time 0 to T 
-function interspike_intervals(neuron::Tuple{Function, Tuple}, input::Function, N::Int64, dt::Float64=DEFAULT_SIMULATION_DT)
-    
-    # unpack neuron
-    (the_neuron, (μ, λ, τ) ) = neuron
+# returns N interspike intervals generate by neuron responding to input(t) 
+# exits & returns intervals so far if an interval exceeds timeout.
+# (length(interval)<N if there was a timeout)
+function interspike_intervals(neuron::Function, input::Function, N::Int64, 
+                timeout::Float64=1.0, dt::Float64=DEFAULT_SIMULATION_DT)
 
     interval = zeros(Float64, N)
 
@@ -579,7 +615,10 @@ function interspike_intervals(neuron::Tuple{Function, Tuple}, input::Function, N
     i = 0
     while i < N
         t += dt
-        if the_neuron(input, t)==true   # neuron fired
+        Delta_t = t - previous_spiketime
+        if Delta_t > timeout
+            return interval[1:i]
+        elseif neuron(input, t)==true   # neuron fired
             i += 1 
             interval[i] = t - previous_spiketime
             previous_spiketime = t  
@@ -761,6 +800,88 @@ function make_fractional_Steinhausen_stateUpdate_acceleration_fcn(
     function update(ωdot::Function, t::Float64)
 
         wdot = ωdot(t)
+
+        y =  x[1]
+        dy = x[2]
+        vs = @view x[3:end]
+        
+        # Approximate D^q u 
+        if (q==0.0) 
+            approx_dq = wdot
+        else
+            approx_dq = K * wdot
+            for i in 1:M
+                approx_dq += residues[i] * vs[i]
+            end
+        end
+        
+        # "ordinary" state updates
+        du[1] = dy
+        du[2] = approx_dq - A * dy - B * y
+        
+        # Auxiliary state updates
+        for i in 1:M
+            du[2 + i] = -p_i[i] * vs[i] + wdot
+        end
+
+        # Euler integration
+        for i in 1:length(x)
+            x[i] += du[i] * dt
+        end
+
+        return x[1]  # return cupula deflection
+    
+    end
+
+    # return closure
+    return update
+end
+
+# returns closure for fractional torsion pendulum state update 
+#  given input u(t) = head angular velocity or acceleration.
+#  TP_update(u::Function, t::Float64)  # closure
+#  If v==true (default) then u(t) is head angular velocity, else it's acceleration.
+function make_fractional_torsion_pendulum_stateUpdate(
+    q::Float64, y0::Float64, yp0::Float64, v::Bool=true, 
+    dt::Float64=DEFAULT_SIMULATION_DT, f0::Float64=1e-2, f1::Float64=2e1)
+
+    # Fractional Steinhausen model: I.y'' + P.y' + K.Dq y = I.wdot, 
+    I = 2.0e-12   # coeff of q'', endolymph moment of inertia kg.m^2
+    P = 6.0e-11   # coeff of q', viscous damping N.m.s/rad 
+    G = 1.0e-10    # coeff of q, cupula stiffness N.m/rad 
+
+    # Update equation coeffs from model parameters
+    A = P/I
+    B = G/I
+ 
+    # convert frequency band from Hz to rad/s
+    wb = 2.0*pi*f0
+    wh = 2.0*pi*f1
+
+    # Approximation of order 2N+1 (so N=2 is 5th order)
+    N = 5
+    
+    # Compute Oustaloup parameters
+    K, poles, xeros = oustaloup_zeros_poles(q, N, wb, wh)
+    
+    # Compute residues and pole dynamics coefficients (the p_i = ω_k >0 for v' = -p_i v + y)
+    residues, _ = oustaloup_residues(K, poles, xeros)
+    p_i = poles  # p_i = ω_k for the dynamics v' = -p_i v + y
+    
+    M = length(poles)  # ... = 2N+1
+
+    # Augmented state: x = [y, y', v1, ..., vM]
+    x = [y0; yp0; zeros(M)]
+    du = zeros(length(x))
+
+    # State update function of angular acceleration ̇ω at current time step
+    function update(u::Function, t::Float64)
+
+        if v==true      # velocity input specified
+            wdot = diffcd(u, t, dt)  # differentiate input
+        else
+            wdot = u(t)  
+        end
 
         y =  x[1]
         dy = x[2]
@@ -1042,7 +1163,188 @@ function make_fractionalSteinhausenExwald_Neuron(q::Float64, EXW_param::Tuple{Fl
 
 end
 
+using LinearAlgebra  # Not strictly needed, but for potential future use
 
+"""
+    fpt_ou_pdf(t, x0, kappa, mu, sigma, b; N=2000)
+
+Compute the probability density function of the first passage time for an
+Ornstein-Uhlenbeck process dX_t = kappa * (mu - X_t) * dt + sigma * dW_t,
+starting at X_0 = x0, to hit the barrier b.
+
+This uses the semi-analytical method of Lipton & Kaushansky (2018) involving
+solution of a Volterra integral equation via discretization. Handles both upper
+and lower barriers via reflection symmetry.
+
+# Arguments
+- `t::Real`: Time at which to evaluate the density (>0).
+- `x0::Real`: Starting value.
+- `kappa::Real >0`: Reversion speed.
+- `mu::Real`: Long-term mean.
+- `sigma::Real >0`: Volatility.
+- `b::Real`: Barrier level.
+- `N::Int=2000`: Number of grid points for discretization (higher for accuracy).
+
+# Returns
+- `Float64`: The FPT density g(t) = d/dt P(τ_b ≤ t).
+
+Note: For barrier at mu (special case), a closed-form exists but is not used here.
+"""
+function fpt_ou_pdf(t::Real, x0::Real, kappa::Real, mu::Real, sigma::Real, b::Real; N::Int=2000)
+    if t <= 0
+        return 0.0
+    end
+    if kappa <= 0 || sigma <= 0
+        error("kappa and sigma must be positive")
+    end
+
+    alpha = sqrt(kappa) / sigma
+    y0 = alpha * (x0 - mu)
+    c = alpha * (b - mu)
+
+    t_bar = kappa * t
+    if y0 > c
+        g_bar = ou_fpt_density_std(t_bar, y0, c, N=N)
+    else
+        g_bar = ou_fpt_density_std(t_bar, -y0, -c, N=N)
+    end
+    return kappa * g_bar
+end
+
+"""
+    ou_fpt_density_std(t, z, b; N=2000)
+
+Standardized version: density for dX_t = -X_t dt + dW_t, first hitting time to b
+from z > b (handles b of either sign via the general Volterra formulation).
+"""
+function ou_fpt_density_std(t::Real, z::Real, b::Real; N::Int=2000)
+    if t <= 0
+        return 0.0
+    end
+    if b >= z
+        error("In standardized case, z > b required")
+    end
+
+    et = exp(t)
+    e2t = et * et
+    denom = e2t - 1.0
+    tau = denom / 2.0
+
+    # Term 1: Free (image) term
+    diffbz = et * b - z
+    exp_arg = - (diffbz^2) / denom + 2.0 * t
+    term1 = - diffbz * exp(exp_arg) / sqrt(pi * denom^3)
+
+    # Discretize [0, tau] with N intervals, N+1 points
+    h = tau / N
+    taus = [k * h for k in 0:N]
+    nu = zeros(N + 1)
+    nu[1] = 0.0  # At tau=0
+
+    # Solve Volterra: nu(tau) = -free(tau) - ∫_0^tau K(tau, s) nu(s) ds
+    # Using left rectangle rule for integral
+    for i in 2:(N + 1)  # i=1 is 0
+        ti = taus[i]
+        bt_i = b * sqrt(2 * ti + 1.0)
+        free_i = exp( - (bt_i - z)^2 / (2 * ti) ) / sqrt(2 * pi * ti )
+
+        integ = 0.0
+        for j in 1:(i - 1)
+            tj = taus[j]
+            bt_j = b * sqrt(2 * tj + 1.0)
+            delta_bt = bt_i - bt_j
+            delta_t = ti - tj
+            exp_k = exp( - delta_bt^2 / (2 * delta_t) )
+            k_j = delta_bt * exp_k / sqrt(2 * pi * delta_t^3)
+            integ += h * k_j * nu[j]
+        end
+        nu[i] = - free_i - integ
+    end
+
+    nu_tau = nu[end]
+
+    # Term 2: Local term with nu(tau)
+    term2 = - (et * b + e2t / sqrt(pi * denom)) * nu_tau
+
+    # Term 3: Integral term
+    term3 = 0.0
+    coef3 = e2t / sqrt(8 * pi)
+    for j in 1:N  # j=1 to N, taus[N+1]=tau, but nu[N+1]=nu_tau
+        tj = taus[j]
+        delta_t = tau - tj
+        if delta_t <= 0
+            continue
+        end
+        nu_diff = nu[j] - nu_tau
+        bracket = 1.0 - 4.0 * b^2 * delta_t
+        exp_part = exp(-2.0 * b^2 * delta_t)
+        integrand_j = bracket * exp_part * nu_diff / (delta_t ^ 1.5)
+        term3 += h * integrand_j
+    end
+    term3 *= coef3
+
+    return term1 + term2 + term3
+end
+
+"""
+    fpt_ig_leaky_pdf(t, mu_ig, lambda, tau; N=2000)
+
+Compute the FPT density for a leaky integrate-and-fire model (OU process), parameterized
+by the inverse Gaussian parameters (mu_ig, lambda) for the non-leaky case (tau = ∞)
+and the reversion time constant tau > 0.
+
+- Starts at x0 = 0, hits upper barrier b = 1.
+- When tau → ∞ (kappa → 0), recovers IG(mu_ig, lambda) density.
+- kappa = 1 / tau (reversion speed).
+- sigma = 1 / sqrt(lambda) (volatility).
+- mu_ou = tau / mu_ig (long-term mean, scaled to match IG drift nu = 1 / mu_ig).
+
+# Arguments
+- `t::Real`: Time (>0).
+- `mu_ig::Real >0`: Mean of the limiting IG distribution.
+- `lambda::Real >0`: Shape of the limiting IG distribution.
+- `tau::Real >0`: Reversion time constant.
+- `N::Int=2000`: Discretization points.
+
+# Returns
+- `Float64`: FPT density at t.
+"""
+function make_fpt_ig_leaky_pdf(mu_ig::Real, lambda::Real, tau::Real)
+
+    # if t <= 0
+    #     return 0.0
+    # end
+    if mu_ig <= 0 || lambda <= 0 || tau <= 0
+        error("mu_ig, lambda, tau must be positive")
+    end
+
+    kappa = 1.0 / tau
+    sigma = 1.0 / sqrt(lambda)
+    x0 = 0.0
+    b = 1.0
+    mu_ou = tau / mu_ig
+
+    # closure
+    function OU_FPT_pdf(t::Real, N::Int64 = 2000)
+        return fpt_ou_pdf(t, x0, kappa, mu_ou, sigma, b; N=N)
+    end
+
+    return OU_FPT_pdf
+
+end
+
+# Optional: Limiting IG density for verification (tau = ∞)
+"""
+    ig_pdf(t, mu_ig, lambda)
+
+Inverse Gaussian density: limiting case as tau → ∞.
+"""
+function ig_pdf(t::Real, mu_ig::Real, lambda::Real)
+    if t <= 0
+        return 0.0
+    end
+    return sqrt(lambda / (2 * pi * t^3)) * exp( -lambda * (t - mu_ig)^2 / (2 * mu_ig^2 * t) )
+end
 
 
 

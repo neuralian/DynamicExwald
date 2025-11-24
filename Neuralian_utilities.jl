@@ -126,24 +126,89 @@ function spiketimes2mp3(spiketime::Vector{Float64}, fileName::String="spiketrain
     wavwrite(spikeAudioData, fileName*".wav", Fs=audioSampleFreq)
 end
 
-# Kullback-Leibler divergence from p(x) to q(x)
-function KLD(x::Vector{Float64}, p::Vector{Float64}, q::Vector{Float64})
+# Kullback-Liebler divergence from ISI data to model
+# see Paulin, Pullar and Hoffman (2024) Sec. 2.2.3
+function sKLD(interval::Vector{Float64}, model::Function)
 
-    @assert length(x)==length(p)==length(q)  "x, p and q must be the same length"
+    N = length(interval)
+    return -sum(log2.([model(interval[i]) for i in 1:N]))/N + log2(N)
+end
+
+
+# Kullback-Leibler divergence from p(x) to q(x) 
+# where p, q are relative frequency histograms or sampled pdfs with binwidth bw
+function KLD( p::Vector{Float64}, q::Vector{Float64}, bw::Float64)
+
+    @assert length(p)==length(q)  "p and q must be the same length"
     @assert all(p .>= 0.0)                      "p must be non-negative"
-    @assert all(q .>= 0.0)                       "q must be positive"
-    @assert isapprox(sum(p), 1.0, atol = 1.0e-6)  "p must sum to 1"
-    @assert isapprox(sum(q), 1.0, atol = 1.0e-6)  "q must sum to 1"
+ #   @assert all(q .>= 0.0)                       "q must be positive"
+    @assert isapprox(sum(p)*bw, 1.0, atol = 1.0e-6)  "p*bw must sum to 1"
+  #  @assert isapprox(sum(q)*bw, 1.0, atol = 1.0e-6)  "q*bw must sum to 1"
 
+#    if isapprox(isapprox(sum(q)*bw, 1.0, atol = 1.0e-6))==false || any(q.<0.0)
+#     @infiltrate
+#    end
 
     D = 0.0
-    for i in 1:length(x)
-        if p[i] > 0.0
+    for i in 1:length(p)
+        if p[i] > 0.0  && q[i] > 0.0
             D += p[i]*log(p[i]/q[i])
         end
     end
 
     return D
+
+end
+
+# entropy H and channel capacity of Exwald distribution discretized at specified timescale, in bits
+# nb using jaynes limiting density of points
+function Exwald_entropy(EXWparam::Tuple{Float64, Float64, Float64}, dt::Float64=DEFAULT_SIMULATION_DT)
+
+    (μ, λ, τ) = EXWparam
+    s = sqrt(μ^2/λ + τ^2)   # s.d. of density
+    t = dt:dt:(μ+6.0*s)     # evaluate to 6 sigma beyond mean (way too far, don't care)
+    
+    S = 0.0
+    N = 0
+    for i = 1:length(t)
+        f = Exwaldpdf(μ, λ, τ, t[i])*dt
+        if f > 0.0
+            S += -f*log2(f)
+            N += 1
+        end
+    end
+
+    S += log2(N)
+
+    # S = entropy 
+    # C = spontaneous channel capacity = bits/spike * spikes/second = bits/second 
+    # P = power consumption assuming constant watts/ATP per spike
+    P = 1.0/(μ+τ)
+    return S, S*P, P
+
+end
+
+# information (bits) in Exwald spikes relative to Poisson spikes at the same rate
+# 
+function KLD_Exwald_to_Exponential(EXWparam::Tuple{Float64, Float64, Float64},
+    dt::Float64=DEFAULT_SIMULATION_DT)
+
+    (μ, λ, τ) = EXWparam
+    m = μ+τ  # mean interval 
+    s = sqrt(μ^2/λ + τ^2)   # s.d. of density
+    t = dt:dt:(μ+6.0*s)     # evaluate to 6 sigma beyond mean (way too far, don't care)
+    
+    S = 0.0
+    for i = 1:length(t)
+        p = Exwaldpdf(μ, λ, τ, t[i])*dt    # Exwald probability in bin
+        q = exp(-t[i]/m)/m*dt              # Exponential probability in bin
+        if p > 0.0 && q > 0.0
+            S += p*log2(p/q)
+        end
+    end
+
+    return S
+
 
 end
 
@@ -231,15 +296,13 @@ end
 
 
 # Exwald pdf at vector of times
-# returns probability density at t 
-# or probability in bins centred at t if P==true
-function Exwaldpdf(mu::Float64, lambda::Float64, tau::Float64, t::Vector{Float64}, P::Bool=false)
+# renormalized if renorm==true
+function Exwaldpdf(mu::Float64, lambda::Float64, tau::Float64, t::Vector{Float64}, renorm::Bool=false)
 
     p = [Exwaldpdf(mu, lambda, tau, s) for s in t]
-    if P 
-        p /= sum(p)                  # normalize as distribution
-    else
-        p /= (sum(p))*(t[2] - t[1]) # normalize as density
+    if renorm
+        p[findall(p.<0.0)] .=0.0  
+        p /= (sum(p)*(t[2] - t[1])) # normalize as density
     end
 
     return p
@@ -1183,7 +1246,7 @@ function Exwald_fromCV(CV::Float64)
     ms2s = 0.001
     log_lambda = (log_lambda_a + log_lambda_b)/2.0
     log_tau    = (log_tau_a + log_tau_b)/2.0
-    return (ms2s*mu_0, ms2s*10.0^log_lambda, ms2s*10.0^log_tau)
+    return ms2s*mu_0, ms2s*10.0^log_lambda, ms2s*10.0^log_tau
 
 end
 
@@ -1212,3 +1275,97 @@ function Wald_parameters_from_FirstpassageTimeModel(v::Float64, s::Float64, barr
     (barrier / v, (barrier / s)^2)
 
 end
+
+using JLD2
+
+"""
+Load all .jld2 files and return as vector of named tuples
+Each tuple contains filename and data
+"""
+function process_OU2EXW(folder_path::String)
+
+    # get names of all .jld2 files in folder
+    filename = filter(f -> endswith(f, ".jld2"), readdir(folder_path))
+
+    # iniitialize using data from first file
+    RawData = load(joinpath(folder_path, filename[1]))
+    EXWparam = RawData["EXWparam"]
+    Goodness = RawData["Goodness"]
+    M, N, P  = size(EXWparam)
+
+
+    # filter using the remaining files
+    for f in 2:length(filename)
+
+        RawData = load(joinpath(folder_path, filename[f]))  
+
+        for i in 1:M 
+            for j in 1:N 
+                for k in 1:P 
+                    if RawData["EXWparam"][i,j,k][3] > EXWparam[i,j,k][3]
+
+                        EXWparam[i,j,k] = RawData["EXWparam"][i,j,k]
+                        Goodness[i,j,k] = RawData["Goodness"][i,j,k]
+
+                    end
+                end
+            end
+        end
+    end
+
+    # shoulda saved these with output data ... 
+    # check the following in demo_OU2Exwald(...)
+    mu_o = vec([.001 .002 .005 .01 .02 .05])
+    N_mu = length(mu_o)    # = N 
+    N_lambda = 8           # = M 
+    lambda_o = collect(logrange(1.0e-2, 5.0e1, length = N_lambda))
+    N_tau = 32   # = P 
+    tau_o = collect(logrange(1.0e-3, 5.0e-2; length=N_tau))
+
+    F = Figure()
+    ax = Axis(F[1,1], xscale = log10, yscale = log10, 
+                xlabel = "LIF μ",
+                ylabel = "Exwald μ",
+                xtickformat = "{:.4f}", ytickformat = "{:.5f}")
+   # ax.xticks = [.005, .01, .02, .05]
+  #  ax.title = @sprintf "LIF μ= %.4f" mu_o
+    # xlims!(ax, .001, .1)
+    # ylims!(ax, .000001, 0.1)
+
+    
+    for i in 1:N 
+        for j in 1:P 
+            lines!(mu_o, [EXWparam[n,i,j][1] for n in 1:M]) 
+        end
+        #labl = @sprintf "%.4f" lambda_o[j]
+  
+    end
+            display(F)   
+
+    return EXWparam, Goodness, F
+end
+
+
+function custom_logrange(start_val, stop_val, factors)
+    # Determine the start and end decades (floored log10 values)
+    start_decade = floor(Int, log10(start_val))
+    stop_decade = ceil(Int, log10(stop_val))
+
+    # Generate the values within the range
+    values = []
+    for decade_exp in start_decade:stop_decade
+        for factor in factors
+            val = factor * 10^decade_exp
+            # Only keep values within the original start and stop bounds
+            if start_val <= val <= stop_val
+                push!(values, val)
+            end
+        end
+    end
+    return values
+end
+
+# # Define the factors you want in each decade
+# factors = [0.1, 0.2, 0.5]
+# result = custom_logrange(0.1, 100.0, factors)
+# # Output: [0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0]
