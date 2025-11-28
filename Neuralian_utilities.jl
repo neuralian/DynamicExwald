@@ -1345,27 +1345,59 @@ function process_OU2EXW(folder_path::String)
     return EXWparam, Goodness, F
 end
 
+# linear interpolate y(xx)
+# given y(x1) = y1, y(x2) = y2 and x1 < xx < x2
+# if x1,x2, y1 or y2 is NaN then return NaN
+# unless xx is approximately x1 or x2
+function linterp(x::Vector{Float64}, y::Vector{Float64}, xx::Float64)
 
-function custom_logrange(start_val, stop_val, factors)
-    # Determine the start and end decades (floored log10 values)
-    start_decade = floor(Int, log10(start_val))
-    stop_decade = ceil(Int, log10(stop_val))
-
-    # Generate the values within the range
-    values = []
-    for decade_exp in start_decade:stop_decade
-        for factor in factors
-            val = factor * 10^decade_exp
-            # Only keep values within the original start and stop bounds
-            if start_val <= val <= stop_val
-                push!(values, val)
-            end
+    if isnan(x[1])
+        if isapprox(x[2], xx, rtol = .01)  # nb isapprox(NaN, NaN, ...) is always false
+            return y[2]  # possibly NaN
+        else 
+            return NaN
         end
+    elseif isnan(x[2])
+        if isapprox(x[1], xx, rtol = .01)  # nb isapprox(NaN, NaN, ...) is always false
+            return y[1]  # possibly NaN
+        else
+            return NaN
+        end        
+    elseif xx > x[1] && xx < x[2]
+        return y[1]*(x[2]-xx)/(x[2]-x[1]) + y[2]*(xx-x[1])/(x[2] - x[1])
+    else
+        error("Interpolation failed (xx must be between x1 and x2)")
     end
-    return values
+
 end
 
-# # Define the factors you want in each decade
-# factors = [0.1, 0.2, 0.5]
-# result = custom_logrange(0.1, 100.0, factors)
-# # Output: [0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0]
+
+# Trilinear interpolation in unit cube
+function trilinear_normalized(xd::Real, yd::Real, zd::Real, vals::Array{Float64, 3})
+    v000 = vals[1, 1, 1]
+    v100 = vals[2, 1, 1]
+    v010 = vals[1, 2, 1]
+    v110 = vals[2, 2, 1]
+    v001 = vals[1, 1, 2]
+    v101 = vals[2, 1, 2]
+    v011 = vals[1, 2, 2]
+    v111 = vals[2, 2, 2]
+
+    return (v000 * (1 - xd) * (1 - yd) * (1 - zd) +
+            v100 * xd * (1 - yd) * (1 - zd) +
+            v010 * (1 - xd) * yd * (1 - zd) +
+            v110 * xd * yd * (1 - zd) +
+            v001 * (1 - xd) * (1 - yd) * zd +
+            v101 * xd * (1 - yd) * zd +
+            v011 * (1 - xd) * yd * zd +
+            v111 * xd * yd * zd)
+end
+
+# Bilinear interpolation in unit square
+function bilinear_normalized(u::Real, v::Real, vals::Matrix{Float64})
+    return ((1 - u) * (1 - v) * vals[1, 1] +
+            u * (1 - v) * vals[2, 1] +
+            (1 - u) * v * vals[1, 2] +
+            u * v * vals[2, 2])
+end
+ 

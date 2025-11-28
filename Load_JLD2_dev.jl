@@ -23,10 +23,10 @@ function load_all_jld2_vector(folder_path::String)
     return results
 end
 
-# Usage
-all_files = load_all_jld2_vector(".")
+# # Usage
+# all_files = load_all_jld2_vector(".")
 
-for item in all_files
-    println("File: $(item.filename)")
-    println("  Data: ", keys(item.data))
-end
+# for item in all_files
+#     println("File: $(item.filename)")
+#     println("  Data: ", keys(item.data))
+# end

@@ -1553,16 +1553,23 @@ function demo_Bayesian_infer_binary_state_from_spiketrain(T::Float64 = 1.0, dt::
 
 end
 
-# plot relationships between Ornstein-Uhlenbeck FPT and Exwald parameters
-function demo_OU2Exwald(N::Int64=1000)
+# construct a map from Ornstein-Uhlenbeck FPT (SLIF neuron) to Exwald parameters
+# plots results as it goes so you don't get bored
+# (It takes about 24hrs to run on my PC with default parameters, Nov 2025)
+# Outputs of this function, EXWparam and param_grid, are used by 
+# SLIF2Exwald() and Exwald2SLIF() 
+# OU2EXW_map, grid = map_OU2Exwald()
+# Remember to capture and save returned variables, 
+#     or uncomment the @save command at the bottom to auto-save
+function map_OU2Exwald(N::Int64=4000)
 
  
-    mu_o = [.001 .002 .005 .01 .02 .05]
+    mu_o = collect(logrange(.001, 0.1, 41) )[1:40]
     N_mu = length(mu_o)
-    N_lambda = 8
-    lambda_o = collect(logrange(1.0e-2, 5.0e1, length = N_lambda))
-    N_tau = 32
-    tau_o = collect(logrange(5.0e-4, 1.0e-1; length=N_tau))
+    lambda_o = collect(logrange(.01, 100., 41))[1:40]
+    N_lambda = length(lambda_o)
+    tau_o = collect(logrange(.00001, .1, 41) )[1:40]
+    N_tau = length(tau_o)
 
     F = Figure()
     ax = Axis(F[1,1], xscale = log10, yscale = log10, 
@@ -1571,9 +1578,9 @@ function demo_OU2Exwald(N::Int64=1000)
                 xtickformat = "{:.4f}", ytickformat = "{:.5f}")
    # ax.xticks = [.005, .01, .02, .05]
   #  ax.title = @sprintf "LIF μ= %.4f" mu_o
-    xlims!(ax, .0001, .1)
-    ylims!(ax, .000001, 1.0)
-0
+    xlims!(ax, .0005, .1)
+    ylims!(ax, .000001, 0.5)
+
     # Save/return fitted Exwald parameters and goodness of fit
     EXWparam = fill((NaN, NaN, NaN), (N_mu, N_lambda, N_tau))
     KLD = zeros(N_mu, N_lambda, N_tau)
@@ -1601,8 +1608,14 @@ function demo_OU2Exwald(N::Int64=1000)
 
  #   axislegend(ax, position = :rt) # :lb means 'left bottom'
    # display(F)
+   grid = (mu_o, lambda_o, tau_o)
 
-    return    EXWparam, KLD, (mu_o, lambda_o,tau_o), F
+   # uncomment next line (& maybe pick a different file name) to auto-save 
+   # using JLD2
+   # jldsave("OU2EXW_EXWparam.jld2", EXWparam, grid, KLD)
+   # DATA = load("filename") to recover
+
+    return    EXWparam, grid , KLD, F
 
 end
 
@@ -1673,3 +1686,83 @@ function show_efficiency_vs_channelcapacity()
 
 end
 
+# OU tau as function of Exwald tau and lambda for given Exwald mu 
+# res = map resolution
+function plot_OU_tau_given_Exwald_tau_lambda(mu::Float64, res::Int64)
+
+    # load OU2EXW map
+    DATA=load("OU2EXW_40x40x40_4000_1.jld2");
+    EXWparam = DATA["EXWparam"]
+    grid = DATA["vex"]
+
+    # τ and λ ranges from PP&H paper 
+    tau = collect(logrange(.00001, .1, length = res))
+    M = length(tau)
+    lambda = collect(logrange(.001, 50.0, length = res+10)) 
+    N = length(lambda)
+
+    OUtau = zeros(M,N)
+    println("")
+    for i in 1:M 
+        for j in 1:N 
+            OUtau[i,j] = Exwald2SLIF((mu,lambda[j], tau[i] ),
+                        grid,
+                        EXWparam)[3]
+        end
+        print(i," ")
+    end
+    println("")
+
+    F = Figure()
+    ax = Axis(F[1,1], xscale = log10, yscale = log10)
+    heatmap!(vex[3], vex[2], OUtau)
+
+    display(F)
+
+    return OUtau, vex
+
+end
+
+# Compare ISI distribution of SLIF neuron
+# with Exwald distribution used to specify its parameters 
+function demo_OUfromExwald(EXWparam::Tuple{Float64, Float64, Float64},
+            N::Int64)
+
+    # load OU2EXW map
+    DATA=load("OU2EXW_40x40x40_4000_1.jld2");
+    EXWmap = DATA["EXWparam"]
+    grid = DATA["vex"]
+
+        
+    # transform Exwald parameters to SLIF parameters
+    OUparam = Exwald2SLIF(EXWparam, grid, EXWmap)
+
+    # construct SLIF neuron
+    SLIFneuron = make_OU_neuron(OUparam)[1]
+
+    # N spontaneous intervals
+    ISI = interspike_intervals(SLIFneuron, t->0.0, N)
+
+    @infiltrate
+
+    # frequency histogram
+    T = 1.25*maximum(ISI)  # longest interval 
+    bw = T/128; #max(Int(round(N/500)), 32)   # at least 32 bins
+    bin_edges = 0.0:bw:T
+    t = collect(0.0:(bw/10):T)
+    H = fit(Histogram, ISI, bin_edges) 
+
+    # relative frequency histogram 
+    f_bin = H.weights./(sum(H.weights)*bw)
+    bin_centres = collect((bin_edges[2:end] + bin_edges[1:(end-1)])*0.5)
+
+    F = Figure()
+    ax = Axis(F[1,1])
+
+    stairs!(bin_centres, f_bin)
+    grid = collect( 0.0:bw/10.0:T )
+    lines!(grid, Exwaldpdf(EXWparam..., grid), linewidth=2)
+
+    display(F)
+
+end
