@@ -336,7 +336,7 @@ function fit_Exwald_to_SLIF(SLIFparam::Tuple{Float64, Float64, Float64}, colour 
             return (NaN, NaN, NaN)
         end
         cv = sqrt(V)/avg
-        w = min(cv/8.0, 0.95)
+        w = min(cv/2.0 , 0.95)
         τ = w*avg
         μ = (1.0-w)*avg
         λ = μ/cv^2

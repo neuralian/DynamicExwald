@@ -1566,9 +1566,9 @@ function map_SLIF2Exwald(N::Int64=8000)
     # default ..., 41))[1:40]
     # 11))[1:10]
     # 21))[1:20]   
-    mu_0 = collect(logrange(.08, 0.12, 6))[1:5]
+    mu_0 = collect(logrange(.005, 0.1, 6))[1:5]
     N_mu = length(mu_0)
-    sigma = collect(logrange(0.001, 1000.0, 11))[1:10]   # from e2-e6
+    sigma = collect(logrange(1.0e-4, 1.0e4, 11))[1:10]   # from e2-e6
     N_sigma = length(sigma)
     taus = collect(logrange(.005, 0.025, 11))[1:10]
     N_tau = length(taus)

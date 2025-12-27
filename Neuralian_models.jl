@@ -520,7 +520,7 @@ function make_SLIF_neuron(SLIFparam::Tuple{Float64, Float64, Float64}, colour = 
     # initial noise 0.0
     z = 0.0
 
-    pink = make_pink_noise(12)
+    pink = make_pink_noise(24)
 
     # set seed for debugging
     #Random.seed!(4242)
