@@ -165,6 +165,33 @@ function Exponential_sample(interval::Vector{Float64}, tau::Float64, dt::Float64
     (m, s, threshold)  # return trigger mechanism parameters
 end
 
+# closure to generate pink noise step dP
+# by adding N white noise samples (Voss pink noise generator)
+function make_pink_noise(N=24)
+
+    count = 0
+    whites = randn(N)   # samples of white noise
+    P = 0.0
+
+    function pink()
+
+        count += 1
+        ntrail = trailing_zeros(count)  # number of trailing zeros in binary representation of count
+        i = (ntrail % N) + 1            # update row i every 2^i steps 
+
+        new_white = randn()
+        P += (new_white - whites[i])    
+        whites[i] = new_white
+
+        return P / sqrt(N)
+
+    end
+
+    return pink
+
+end
+
+
 
 
 # # stationary Exwald samples by simulation
@@ -451,10 +478,13 @@ function make_OU_neuron(OU_param::Tuple{Float64, Float64, Float64}, dt::Float64=
 
     G = 1.0  # mean input to exwald components is v = v0 + G*δ
     x = 0.0
-
+        Random.seed!(4242)
     function ou_neuron(δ::Function, t::Float64)
         
+
+
         dx = (-x/tau + v0 + G*δ(t))*dt + s * randn(1)[] * sqrt(dt)   # leaky-integrate noise
+
         x = x + dx
         if x >= barrier      
             x -= barrier     # reset integral for next refractory period
@@ -465,7 +495,55 @@ function make_OU_neuron(OU_param::Tuple{Float64, Float64, Float64}, dt::Float64=
 
     end
 
-    return ou_neuron, OU_param
+    return ou_neuron  #, OU_param
+end
+
+
+
+# returns SLIFneuron that takes 1 step in Ornstein-Uhlenbeck leaky drift-diffusion process
+# with coloured noise input, given cupula deflection δ(t)
+# closure returns true if v(t) reaches the barrier v==1 (neuron spiked), otherwise false
+# assumes input gain g=1, to be revisited
+function make_SLIF_neuron(SLIFparam::Tuple{Float64, Float64, Float64}, colour = 0.1, dt::Float64=DEFAULT_SIMULATION_DT)
+
+    # extract SLIF parameters
+    (v0, sigma, tau) = SLIFparam
+
+    barrier = 1.0
+    g = 1.0  
+    v = 0.0
+
+    # SDE coeffs pre-computed
+    A = dt/colour    
+    B = dt*sigma/sqrt(colour)
+
+    # initial noise 0.0
+    z = 0.0
+
+    # set seed for debugging
+    #Random.seed!(4242)
+
+    function SLIFneuron(δ::Function, t::Float64)
+
+        # coloured noise  dZ = -(1/tau_n)*Z*dt + sigma/sqrt(tau_n)*dW
+        #  where dW is Wiener process (Brownian motion) step
+        dz = -A*z + B*rand(Normal())
+        z = z + dz
+
+        # leaky integrate with coloured noise input
+        dv = ( v0 + g*δ(t) - v )*dt/tau + z*sqrt(dt)   
+
+        v = v + dv
+        if v >= barrier      
+            v = 0.0 # -= barrier    # reset integral 
+            return true     # spike
+        else
+            return false    # no spike
+        end
+
+    end
+
+    return SLIFneuron 
 end
 
 
@@ -1352,9 +1430,11 @@ end
 function SLIF2Exwald(OUparam::Tuple{Float64, Float64, Float64},
                     grid::Tuple{Vector{Float64},Vector{Float64}, Vector{Float64}},
                     O2X_map::Array{Tuple{Float64, Float64, Float64}, 3})
-    
-    mu_o, lambda_o, tau_o = OUparam
-    muo_grid, lambdao_grid, tauo_grid = grid
+    # log transform
+    mu_o, lambda_o, tau_o = log.(OUparam)
+    muo_grid = log.(grid[1])
+    lambdao_grid = log.(grid[2])
+    tauo_grid = log.(grid[3])
 
     n = length(muo_grid)
     if n != size(O2X_map, 1) || n != size(O2X_map, 2) || n != size(O2X_map, 3)
@@ -1375,7 +1455,7 @@ function SLIF2Exwald(OUparam::Tuple{Float64, Float64, Float64},
     # Check all 8 vertices valid
     valid = true
     for ii in 0:1, jj in 0:1, kk in 0:1
-        if isnan(O2X_map[i + ii, j + jj, k + kk][1])
+        if isnan(log(O2X_map[i + ii, j + jj, k + kk][1]))
             valid = false
             break
         end
@@ -1395,7 +1475,7 @@ function SLIF2Exwald(OUparam::Tuple{Float64, Float64, Float64},
     lambda_vals = zeros(2, 2, 2)
     tau_vals = zeros(2, 2, 2)
     for ii in 0:1, jj in 0:1, kk in 0:1
-        t = O2X_map[i + ii, j + jj, k + kk]
+        t = log.(O2X_map[i + ii, j + jj, k + kk])
         mu_vals[ii + 1, jj + 1, kk + 1] = t[1]
         lambda_vals[ii + 1, jj + 1, kk + 1] = t[2]
         tau_vals[ii + 1, jj + 1, kk + 1] = t[3]
@@ -1405,7 +1485,7 @@ function SLIF2Exwald(OUparam::Tuple{Float64, Float64, Float64},
     lambdax = trilinear_normalized(xd, yd, zd, lambda_vals)
     taux = trilinear_normalized(xd, yd, zd, tau_vals)
 
-    return (mux, lambdax, taux)
+    return exp.((mux, lambdax, taux))
 end
 
 # transform Exwald parameters (μₓ, λₓ, τₓ) to  SLIF parameters (μₛ, λₛ, τₛ)
@@ -1416,10 +1496,10 @@ function Exwald2SLIF(EXWparam::Tuple{Float64, Float64, Float64},
                     O2X_map::Array{Tuple{Float64, Float64, Float64}, 3})
     
     # log transform
-    mu_x, lambda_x, tau_x =EXWparam
-    muo_grid     = grid[1]
-    lambdao_grid = grid[2]
-    tauo_grid    = grid[3]
+    mu_x, lambda_x, tau_x = log.(EXWparam)
+    muo_grid     = log.(grid[1])
+    lambdao_grid = log.(grid[2])
+    tauo_grid    = log.(grid[3])
    # O2X_map = log.(O2X_map)
 
     n = length(muo_grid)
@@ -1432,7 +1512,7 @@ function Exwald2SLIF(EXWparam::Tuple{Float64, Float64, Float64},
     lambda_xs = Float64[]
     tau_xs = Float64[]
     for i in 1:n, j in 1:n, k in 1:n
-        t = O2X_map[i, j, k]
+        t = log.(O2X_map[i, j, k])
         if !isnan(t[1])
             push!(mu_xs, t[1])
             push!(lambda_xs, t[2])
@@ -1457,7 +1537,7 @@ function Exwald2SLIF(EXWparam::Tuple{Float64, Float64, Float64},
         # Check valid
         valid = true
         for ii in 0:1, jj in 0:1, kk in 0:1
-            if isnan(O2X_map[i + ii, j + jj, k + kk][1])
+            if isnan(log.(O2X_map[i + ii, j + jj, k + kk][1]))
                 valid = false
                 break
             end
@@ -1471,7 +1551,7 @@ function Exwald2SLIF(EXWparam::Tuple{Float64, Float64, Float64},
         lambda_vals = zeros(2, 2, 2)
         tau_vals = zeros(2, 2, 2)
         for ii in 0:1, jj in 0:1, kk in 0:1
-            t = O2X_map[i + ii, j + jj, k + kk]
+            t = log.(O2X_map[i + ii, j + jj, k + kk])
             mu_vals[ii + 1, jj + 1, kk + 1] = t[1]
             lambda_vals[ii + 1, jj + 1, kk + 1] = t[2]
             tau_vals[ii + 1, jj + 1, kk + 1] = t[3]
@@ -1486,8 +1566,8 @@ function Exwald2SLIF(EXWparam::Tuple{Float64, Float64, Float64},
 
         # Newton-Raphson
         params = [0.5, 0.5, 0.5]
-        tol = 1e-6
-        maxiter = 20
+        tol = 1e-10
+        maxiter = 1000
         for _ in 1:maxiter
             xd, yd, zd = params
 
@@ -1504,7 +1584,7 @@ function Exwald2SLIF(EXWparam::Tuple{Float64, Float64, Float64},
                     mu_o = muo_grid[i] * (1 - params[1]) + muo_grid[i + 1] * params[1]
                     lambda_o = lambdao_grid[j] * (1 - params[2]) + lambdao_grid[j + 1] * params[2]
                     tau_o = tauo_grid[k] * (1 - params[3]) + tauo_grid[k + 1] * params[3]
-                    return mu_o, lambda_o, tau_o
+                    return exp(mu_o), exp(lambda_o), exp(tau_o)
                 end
                 break
             end
@@ -1594,11 +1674,316 @@ function Exwald2SLIF(EXWparam::Tuple{Float64, Float64, Float64},
             mu_o = muo_grid[i] * (1 - xd) + muo_grid[i + 1] * xd
             lambda_o = lambdao_grid[j] * (1 - yd) + lambdao_grid[j + 1] * yd
             tau_o = tauo_grid[k] * (1 - zd) + tauo_grid[k + 1] * zd
-            return mu_o, lambda_o, tau_o
+            return exp(mu_o), exp(lambda_o), exp(tau_o)
         end
     end
 
     return (NaN, NaN, NaN)
 end
 
+# transform Exwald parameters (μₓ, λₓ, τₓ) to  SLIF parameters (μₛ, λₛ, τₛ)
+# By Newton-Raphson search in 3d grid given by
+# O2X_map, grid = (mu_o, lambda_o,tau_o) computed by map_OU2Exwald()
+# stored in jld2file 
+function Exwald2SLIF(EXWparam::Tuple{Float64, Float64, Float64},
+                     JLD2_filename::String = "OU2EXW_40x40x40_4000_1.jld2")
+
+    # load OU2EXW map
+    DATA=load(JLD2_filename);
+    O2X_map = DATA["EXWparam"]
+    grid = DATA["vex"]                
+
+    OUparam = Exwald2SLIF(EXWparam,grid, O2X_map)
+
+end
+
+# returns a function that returns Exwald parameters given SLIF parameters
+function dev1_parameterize_OU2EXW(i::Int64, j::Int64, a::Float64)
+
+    # load OU2EXW map
+    DATA=load("OU2EXW_40x40x40_4000_1.jld2");
+    EXWparam = DATA["EXWparam"]
+    grid = DATA["vex"]
+
+    # 
+    mu_grid = grid[1]
+    lambda_grid = grid[2]
+    tau_grid = grid[3]
+    Nt = length(tau_grid)
+
+    # data (contains NaNs)
+    tau = [EXWparam[i, j, k][3] for k in 1:Nt]
+
+    # extract segment containing Reals
+    k0 = findfirst(!isnan, tau)
+    k1 = findlast(!isnan, tau)
+    K = k0:k1
+
+    # initial estimates
+    A0 = 1.0*1.2
+    B0 = 0.145*tau[k0]*1.2
+    C0 = 0.67*tau[k1]*1.2
+    pInit = [A0, B0, C0]
+    grad = zeros(length(pInit))  # required but not used in optimization
+
+    # bounds
+    LB = [0.0, 0.0, 0.0]
+    UB = [Inf, Inf, Inf]
+
+    # model
+    f(x,p) =  exp(p[1]./(log.(x./p[2])) .+ log(p[3]))
+
+    # error functional (sum squared error model - data)
+    # returns Inf for invalid parameters
+    function V(param, grad) 
+
+        v = 0.0
+        for k in K
+            try 
+                v += (f(tau_grid[k], param)-tau[k])^2
+            catch
+                v += Inf
+            end
+        end
+
+        return v 
+    end
+
+    # y = exp.(f(tau_grid, pInit))
+    # replace!(e -> e <= C0 || e > 100.0 ? NaN : e, y)  # hide values < 0.0 in plot
+
+    Prob = Optimization.OptimizationProblem(OptimizationFunction(V), pInit, grad, lb=LB, ub = UB)
+    sol = solve(Prob, NLopt.LN_PRAXIS(), reltol = 1.0e-9)
+ 
+    println(sol.u)
+    # fitted curve
+    y = [f(tau_grid[k], sol.u) for k in K ]
+
+    # init curve
+    yx = [f(tau_grid[k], pInit) for k in K ]
+
+    println("μ = ", mu_grid[i], ", λ = ", lambda_grid[j])
+
+    FF = Figure()
+    ax = Axis(FF[1,1], xscale = log10, yscale = log10,
+         xtickformat = "{:.4f}", ytickformat = "{:.5f}")
+
+    scatter!(tau_grid[K], tau[K], color = :skyblue, markersize = 12)
+
+
+    lines!(tau_grid[K], y, color = :salmon, linewidth = 3)
+
+  #  lines!(tau_grid[K], yx, color = :blue)
+
+    display(FF)
+
+end
+
+
+# returns a function that returns Exwald parameters given SLIF parameters
+function dev2_parameterize_OU2EXW()
+
+    # load OU2EXW map
+    DATA=load("OU2EXW_40x40x40_4000_1.jld2");
+    EXWparam = DATA["EXWparam"]
+    grid = DATA["vex"]
+
+
+
+    # 
+    mu_grid = grid[1]
+    Nmu = length(mu_grid)
+    lambda_grid = grid[2]
+    Nlam = length(lambda_grid)
+    tau_grid = grid[3]
+    Ntau = length(tau_grid)
+
+       # model
+    f(x,p) =  exp(p[1]./(log.(x./p[2])) .+ log(p[3]))
+
+    # error functional (sum squared error model - data)
+    # returns Inf for invalid parameters
+
+    grad = zeros(3)  # required but not used in optimization
+
+    # bounds
+    LB = [0.0, 0.0, 0.0]
+    UB = [Inf, Inf, Inf]
+
+    fittedparam = NaN*zeros(Nmu, Nlam, 3)
+
+    for i in 1:(Nmu-3)
+
+    FF = Figure()
+    ax = Axis(FF[1,1], xscale = log10, yscale = log10,
+         xtickformat = "{:.4f}", ytickformat = "{:.5f}")
+
+    for j in 1:Nlam
+
+        # data (contains NaNs)
+        tau = [EXWparam[i, j, k][3] for k in 1:Ntau]
+
+        # extract segment containing Reals
+        k0 = findfirst(!isnan, tau)
+        k1 = findlast(!isnan, tau)
+        K = k0:k1
+
+        function V(param, grad) 
+
+            v = 0.0
+            for k in K
+                try 
+                    v += (log(f(tau_grid[k], param))-log(tau[k]))^2
+                catch
+                    v += Inf
+                end
+            end
+
+            return v 
+        end
+
+
+        # initial estimates
+        # A0 = 1.0
+        # B0 = 0.145*tau[k0]
+        # C0 = 0.67*tau[k1]
+        pInit = [2.0, 0.001*tau[k0], tau[k1]]
+ 
+        # if i == 1
+        #     pInit = [2.0, 0.001*tau[k0], tau[k1]]
+        # else
+        #     pInit = fittedparam[i-1,:]
+        # end
+
+        Prob = Optimization.OptimizationProblem(OptimizationFunction(V), pInit, grad, lb=LB, ub = UB)
+        sol = solve(Prob, NLopt.LN_PRAXIS(), reltol = 1.0e-9)
+
+        fittedparam[i,j, :] = sol.u
+    
+       # println(sol.u)
+        # fitted curve
+        y = [f(tau_grid[k], sol.u) for k in K ]
+
+        # init curve
+        yx = [f(tau_grid[k], pInit) for k in K ]
+
+    #  println("μ = ", mu_grid[i], ", λ = ", lambda_grid[j])
+
+        scatter!(ax, tau_grid[K], tau[K], color = :maroon, markersize = 6)
+
+        lines!(ax, tau_grid[K], y, color = :salmon, linewidth = 1)
+
+    end
+
+  #  lines!(tau_grid[K], yx, color = :blue)
+
+    println(i)
+    display(FF)
+
+end
+
+    return fittedparam
+
+end
+
+function make_fractional_SLIF_neuron(
+    SLIF_param::Tuple{Float64, Float64, Float64}, q::Float64, 
+    x0::Float64=0.0; 
+    dt::Float64=DEFAULT_SIMULATION_DT, f0::Float64=1e-2, f1::Float64=2e1)
+
+    # # Fractional Steinhausen model: I.y'' + P.y' + K.Dq y = I.wdot, 
+    # I = 2.0e-12   # coeff of q'', endolymph moment of inertia kg.m^2
+    # P = 6.0e-11   # coeff of q', viscous damping N.m.s/rad 
+    # G = 1.0e-10    # coeff of q, cupula stiffness N.m/rad 
+
+    # # Update equation coeffs from model parameters
+    # A = P/I
+    # B = G/I
+
+    # Fractional SLIF neuron
+        # extract OU parameters
+    (mu, lambda, tau) = SLIF_param
+
+    # First passage time model parameters for τ = 0.0 (Inverse Gaussian/Wald model)
+    # with barrier height = 1.0
+    (v0, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda, "barrier", 1.0)
+ 
+
+    # input gain (how much the drift rate is affected by input)
+    G = 1.0
+
+    # convert frequency band from Hz to rad/s
+    wb = 2.0*pi*f0
+    wh = 2.0*pi*f1
+
+    # Approximation of order 2N+1 (so N=2 is 5th order)
+    N = 5
+    
+    # Compute Oustaloup parameters
+    K, poles, xeros = oustaloup_zeros_poles(q, N, wb, wh)
+    
+    # Compute residues and pole dynamics coefficients (the p_i = ω_k >0 for v' = -p_i v + y)
+    residues, _ = oustaloup_residues(K, poles, xeros)
+    p_i = poles  # p_i = ω_k for the dynamics v' = -p_i v + y
+    
+    M = length(poles)  # ... = 2N+1
+
+    # Augmented state: x = [y, v1, ..., vM]
+    x = [x0; zeros(M)]
+    du = zeros(length(x))
+
+    Threshold = 1.0
+    Random.seed!(4242)
+
+    # neuron update function given u(t) 
+    function qSLIF(u::Function, t::Float64)
+
+     #   @infiltrate
+
+     #   dx = (-x/tau + v0 + G*u(t))*dt + s * randn(1)[] * sqrt(dt) 
+ 
+
+        ut = v0 + G*u(t) + s*sqrt(tau*mu^3/lambda)*randn(1)[]/sqrt(dt)   # input at t
+
+        vs = @view x[2:end]
+
+       # @infiltrate
         
+        # Approximate D^q u 
+        if (q==0.0) 
+            approx_dq = ut
+        else
+            approx_dq = K * ut
+            for i in 1:M
+                approx_dq += residues[i] * vs[i]
+            end
+        end
+        
+        # state update
+        du[1] =  approx_dq - x[1]/tau
+        
+        # Auxiliary state update
+        for i in 1:M
+            du[1 + i] = -p_i[i] * vs[i] + ut
+        end
+
+     #   @infiltrate
+
+        # Euler integration
+        for i in 1:length(x)
+            x[i] += du[i] * dt
+        end
+
+        if x[1] >= Threshold      
+            x[1] -= Threshold 
+           # vs .= 0.0
+            return true
+        else
+            return false  
+        end
+    
+    end
+
+    # return closure
+    return qSLIF 
+end
