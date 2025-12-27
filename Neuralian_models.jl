@@ -520,6 +520,8 @@ function make_SLIF_neuron(SLIFparam::Tuple{Float64, Float64, Float64}, colour = 
     # initial noise 0.0
     z = 0.0
 
+    pink = make_pink_noise(12)
+
     # set seed for debugging
     #Random.seed!(4242)
 
@@ -531,7 +533,7 @@ function make_SLIF_neuron(SLIFparam::Tuple{Float64, Float64, Float64}, colour = 
         z = z + dz
 
         # leaky integrate with coloured noise input
-        dv = ( v0 + g*δ(t) - v )*dt/tau + z*sqrt(dt)   
+        dv = ( v0 + g*δ(t) - v )*dt/tau + sigma*pink()*sqrt(dt)   
 
         v = v + dv
         if v >= barrier      

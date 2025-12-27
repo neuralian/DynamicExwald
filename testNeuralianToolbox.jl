@@ -1566,11 +1566,11 @@ function map_SLIF2Exwald(N::Int64=8000)
     # default ..., 41))[1:40]
     # 11))[1:10]
     # 21))[1:20]   
-    mu_0 = collect(logrange(.01, 0.1, 11))[1:10]
+    mu_0 = collect(logrange(.08, 0.12, 6))[1:5]
     N_mu = length(mu_0)
-    sigma = collect(logrange(1.0e-2, 1.0e4, 11))[1:10]  # from e2-e6
+    sigma = collect(logrange(0.001, 1000.0, 11))[1:10]   # from e2-e6
     N_sigma = length(sigma)
-    taus = collect(logrange(.005, 0.05, 11))[1:10]
+    taus = collect(logrange(.005, 0.025, 11))[1:10]
     N_tau = length(taus)
 
     colour = 0.01
@@ -1598,7 +1598,7 @@ function map_SLIF2Exwald(N::Int64=8000)
                 v0 = 1.0/(1.0 - exp(-mu_0[i]/taus[k]))  # drift required for expected FPT = mu[i]
                 println(i, ", ", j, ", ", k)
                 EXWparam[i, j, k] = fit_Exwald_to_SLIF( (v0, sigma[j], taus[k]), taus[k],
-                                                         N, pInit, (0.001, 0.1))
+                                                         N, pInit, (0.001, 0.05))
                 println(EXWparam[i, j, k])
                # pInit = EXWparam[i, j, k]
             end
@@ -1973,10 +1973,9 @@ function plot3D_fittedExwald_vs_SLIF(filename::String, sp::String)
                xlabel="TAU",
                ylabel="LAMBDA",
                zlabel="MU")
-   #            title=title)
-    #  xlims!(axX, (-5,-1))
-    #  ylims!(axX, (-2, 2))
-    #  zlims!(axX, (-4, 0))
+     xlims!(axX, (-5,-1))
+     ylims!(axX, (-2, 2))
+     zlims!(axX, (-3, 0)) 
               # aspect=axis_equal ? :data : :auto)
 
            #   @infiltrate
