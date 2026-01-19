@@ -336,7 +336,7 @@ function fit_Exwald_to_SLIF(SLIFparam::Tuple{Float64, Float64, Float64}, colour 
             return (NaN, NaN, NaN)
         end
         cv = sqrt(V)/avg
-        w = min(cv/2.0 , 0.95)
+        w = min(cv/4.0 , 0.95)
         τ = w*avg
         μ = (1.0-w)*avg
         λ = μ/cv^2
@@ -375,7 +375,7 @@ function fit_Exwald_to_SLIF(SLIFparam::Tuple{Float64, Float64, Float64}, colour 
     # NLopt.lower_bounds!(optStruc, zeros(Float64, length(pInit)))  # constrain parameters > 0
     # NLopt.xtol_abs!(optStruc, 1.0e-12)
     f = OptimizationFunction(KL_divergence)
-    Prob = Optimization.OptimizationProblem(f, pInit, grad, lb=LB, ub = UB)
+    Prob = Optimization.OptimizationProblem(f, pInit, grad) #, lb=LB, ub = UB)
     sol = solve(Prob, NLopt.LN_PRAXIS(), abstol = 1.0e-12)
  
   #  fitted_param = (sol.u[1], sol.u[1]/sol.u[2]^2, sol.u[3])

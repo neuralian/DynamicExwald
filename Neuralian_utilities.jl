@@ -232,7 +232,6 @@ end
 # Exwald pdf at t (From Schwarz (2002) DOI: 10.1081/STA-120017215)
 function Exwaldpdf(mu::Float64, lambda::Float64, tau::Float64, t::Float64)
 
-    @assert lambda > 0.0    "lambda must be > 0.0"
     @assert t >= 0.0         "Exwald undefined for t < 0.0"
 
     # use Schwarz (2002) notation to make it easier to check formulas
@@ -314,7 +313,6 @@ function scaled_Exwaldpdf(mu::Float64, lambda::Float64, tau::Float64, t::Vector{
     [Exwaldpdf(mu, lambda, s * tau, q) for q in t]
 
 end
-
 
 # Function to compute Oustaloup approximation parameters
 function oustaloup_zeros_poles(alpha::Float64, N::Int, wb::Float64, wh::Float64)
@@ -543,8 +541,6 @@ function intervalPhase_independent(spiketime::Vector{Float64}, phase::Float64, f
 
 end
 
-
-
 function xlims(ax::Axis)
     ax.xaxis.attributes.limits[]
 end
@@ -575,9 +571,6 @@ function niceYtick(fmax::Float64, axlim::Float64)
 
     return y 
 end
-
-
-
 
 # Exwald model Bode gain and phase plots 
 # BLG stimulus, cross-power spectrum
@@ -665,7 +658,6 @@ function exwaldBodePlots_fromBLG(CV::Float64, Nreps::Int)
     Fig
 end
 
-
 # construct closure function to generate band-limited Gaussian noise by sum-of-cosines
 #  flower, fupper:  frequency band /Hz 
 #   rms:  root mean squared noise amplitude 
@@ -714,7 +706,6 @@ function blg_derivative_RMS(blgParams)
     sqrt( (4.0/3.0)*π^2*rms^2*(fupper^3-flower^3)/(fupper-flower) )
 
 end
-
 
 # Exwald model Bode gain and phase plots
 # sinewave stimuli, vector of frequencies in Hz
@@ -803,7 +794,6 @@ function dynamicExwaldGainPhase_fromSines(exwald_param::Tuple{Float64,Float64,Fl
 
 end
 
-
 # Exwald model Bode gain and phase plots 
 # BLG stimulus, cross-power spectrum
 function exwaldBodePlots_fromBLG(CV::Float64, Nreps::Int)
@@ -889,7 +879,6 @@ function exwaldBodePlots_fromBLG(CV::Float64, Nreps::Int)
     
     Fig
 end
-
 
 # returns Bode gain and phase for fractional torsion pendulum - Exwald neuron model 
 # as BGP = ( (Gain, GainSD), (Phase, PhaseSD), freq) 
@@ -1058,7 +1047,6 @@ function diffcd(v::Vector{Float64}, dt::Float64=DEFAULT_SIMULATION_DT)
     return dv
 end
 
-
 # fractional differintegrator by convolving vector f with power law kernel.
 # Because dq is history-dependent (i.e. current state vector includes all previous inputs)
 # it is prohibitively slow to compute dq() by updating at each time step. 
@@ -1072,7 +1060,6 @@ function dq(f::Vector{Float64}, q, dt::Float64=DEFAULT_SIMULATION_DT)
     dt^-q*conv(K,f)[1:N];
 
 end
-
 
 # returns closure to compute fractional derivative dq(f, t) = d^q f(t) / dt^q
 # using Oustaloop approximation in band (f0, f1) Hz 
@@ -1125,6 +1112,16 @@ function make_fractional_derivative(f::Function, q::Float64,
     return dq 
 end
 
+# add a tuple or a vector to a tuple 
+function tpadd(T::Tuple, t::Union{Tuple, Vector})
+
+    @assert length(T)==length(t) "addends must be the same length"
+
+    return tuple(vec(collect(T) + collect(t))...)
+
+end
+
+
 
 # return trigger threshold for mean interval tau between threshold-crossing events 
 # for specified noise Normal(μ,s)
@@ -1165,7 +1162,6 @@ function CV_fromExwaldModel(mu::Float64, lambda::Float64, tau::Float64)
     CV = sqrt(exwaldVariance)/exwaldMean
 
 end
-
 
 # CV* of Exwald model test_fit_Exwald_neuron_stationary
 function CVStar_fromExwaldModel(mu::Float64, lambda::Float64, tau::Float64)
@@ -1275,8 +1271,6 @@ function Wald_parameters_from_FirstpassageTimeModel(v::Float64, s::Float64, barr
     (barrier / v, (barrier / s)^2)
 
 end
-
-using JLD2
 
 """
 Load all .jld2 files and return as vector of named tuples
@@ -1400,4 +1394,260 @@ function bilinear_normalized(u::Real, v::Real, vals::Matrix{Float64})
             (1 - u) * v * vals[1, 2] +
             u * v * vals[2, 2])
 end
- 
+
+# project 3D array A3 to 2D array by averaging over dimension d
+# ignore NaNs in the average (unless everything is NaN, then average = NaN) 
+function projectmap(map3D::Array, dim::Int) 
+    
+    N  = collect(size(map3D))                     
+    D  = findall(d-> d!=dim, [1, 2, 3])    # dimensions to keep
+    d1 = D[1] 
+    d2 = D[2]
+    map2D = zeros(N[d1],N[d2])    # blank screen for 2D projection along dim
+
+    for i in 1:N[d1] 
+        for j in 1:N[d2]
+
+            count = 0     
+            for k in 1:N[dim]
+
+                # permute indices to average over dim
+                p = (i,j,k)  # if dim==3
+                if dim==1
+                    p = (j,k,i)
+                elseif dim==2
+                    p = (i,k,j)
+                end
+
+                if !isnan(map3D[p...])
+                    map2D[i,j] += map3D[p...]
+                    count += 1
+                end
+            end
+
+            if count==0   # all NaNs 
+                map2D[i,j] = NaN
+            else
+                map2D[i,j] /= count
+            end
+
+        end
+    end
+
+    return map2D
+
+end
+
+
+# 
+# e.g. map: jldsave("OUtau_mu_lambda_tau_Cloud.jld2"; OUtau, mu, lambda, tau)  
+function plot_3D_map_as_cloud(data::Array{Float64, 3},
+                               x_vals, y_vals, z_vals;
+                               colormap=:viridis,
+                               markersize=5,
+                               colorrange=nothing,
+                               alpha=1.0,
+                               threshold=nothing,  # Only plot values above threshold
+                               value_range=nothing,  # Only plot values in (min, max)
+                               show_colorbar=true,
+                               xlabel="x",
+                               ylabel="y", 
+                               zlabel="z",
+                               title="3D Point Cloud",
+                               axis_equal=false)
+    
+    x_vec = collect(x_vals)
+    y_vec = collect(y_vals)
+    z_vec = collect(z_vals)
+    
+    @assert length(x_vec) == size(data, 1) "X values must match first dimension"
+    @assert length(y_vec) == size(data, 2) "Y values must match second dimension"
+    @assert length(z_vec) == size(data, 3) "Z values must match third dimension"
+    
+    # Extract valid points
+    points_x = Float64[]
+    points_y = Float64[]
+    points_z = Float64[]
+    colors = Float64[]
+    
+    nx, ny, nz = size(data)
+    
+    for i in 1:nx
+        for j in 1:ny
+            for k in 1:nz
+                val = data[i, j, k]
+                
+                # Skip NaN
+                if isnan(val)
+                    continue
+                end
+
+                # # skip short or long
+                # mean_interval = x_vec[i]+z_vec[k]
+                # if mean_interval < 0.05 || mean_interval > 0.1
+                #     continue
+                # end 
+                
+                # Apply threshold
+                if threshold !== nothing && val < threshold
+                    continue
+                end
+                
+                # Apply value range
+                if value_range !== nothing
+                    vmin, vmax = value_range
+                    if val < vmin || val > vmax
+                        continue
+                    end
+                end
+                
+                push!(points_x, x_vec[i])
+                push!(points_y, y_vec[j])
+                push!(points_z, z_vec[k])
+                push!(colors, val)
+            end
+        end
+    end
+    
+    if isempty(colors)
+        @warn "No valid points to plot!"
+        return nothing
+    end
+    
+    # Color range
+    if colorrange === nothing
+        colorrange = (minimum(colors), maximum(colors))
+    end
+    
+    # Create figure
+    fig = Figure(size=(600, 600))
+    ax3 = Axis3(fig[1, 1], 
+               xlabel=xlabel,
+               ylabel=ylabel,
+               zlabel=zlabel,
+               title=title)
+    xlims!(ax3, (-4,0))
+    ylims!(ax3, (-2, 2))
+    zlims!(ax3, (-5, -1))
+              # aspect=axis_equal ? :data : :auto)
+    
+    # Scatter plot
+    scatter!(ax3, log10.(points_x), log10.(points_y), log10.(points_z),
+             color=colors,
+             colormap=colormap,
+             colorrange=colorrange,
+             markersize=markersize,
+             alpha=alpha)
+    
+    Colorbar
+    if show_colorbar
+        Colorbar(fig[1, 2],
+                 limits=colorrange,
+                 colormap=colormap,
+                 label="Value")
+    end
+
+
+    # ax_tau_mu = Axis(fig[1,2])
+    # heatmap!(ax_tau_mu, projectmap(data, 2) )
+
+    # ax_lambda_mu = Axis(fig[2,1])
+    # heatmap!(ax_lambda_mu, projectmap(data, 3) )
+
+    # ax_tau_lambda = Axis(fig[2,2])
+    # heatmap!(ax_tau_lambda, projectmap(data, 1) )
+
+    display(fig)
+
+
+    println("Plotted $(length(colors)) points")
+    
+    return fig
+end
+
+
+function plot_linked_points(A::Matrix{Float64}, B::Matrix{Float64})
+    # Basic validation
+    size(A) == size(B) || error("Matrices A and B must have the same dimensions")
+    
+    # Create the figure
+    fig = Figure(size = (1200, 600))
+    
+    # Define axes
+    ax1 = Axis3(fig[1, 1], title = "Set A")
+    ax2 = Axis3(fig[1, 2], title = "Set B")
+    
+    # This Observable tracks the index of the currently selected point
+    # We initialize it to 0 (no selection)
+    selected_idx = Observable(0)
+    
+    # Create color arrays that update when selected_idx changes
+           c = fill(:blue, size(A, 1))
+    colors = lift(selected_idx) do idx
+      #  c = fill(:blue, size(A, 1))
+        if idx > 0 && idx <= length(c)
+            c[idx] = :red # Highlight color
+        end
+        return c
+    end
+
+    # Plot the points
+    # We use rows as points: A[:, 1], A[:, 2], A[:, 3]
+    markersize = 8
+    plt1 = scatter!(ax1, log10.(A[:, 1]), log10.(A[:, 2]), log10.(A[:, 3]), color = colors, markersize = markersize)
+    xlims!(ax1, -5, -1)
+    ylims!(ax1, -2,2)
+    zlims!(ax1, -4, 0)
+    plt2 = scatter!(ax2, log10.(B[:, 1]), log10.(B[:, 2]), log10.(B[:, 3]), color = colors, markersize = markersize)
+
+    # Interaction logic
+    on(events(fig).mousebutton) do event
+        if event.button == Mouse.left && event.action == Mouse.press
+            # Pick the plot object under the mouse
+            plt, idx = pick(fig)
+            
+            # Check if we clicked a point in plot 1 or plot 2
+            if plt in (plt1, plt2) && idx > 0
+                selected_idx[] = idx
+                
+                # Print coordinates to REPL
+                println("\nSelected Point Index: $idx")
+                println("Coord A: $(A[idx, :])")
+                println("Coord B: $(B[idx, :])")
+            end
+        end
+    end
+
+    return fig
+end
+
+# --- Example Usage ---
+# Generate some dummy data
+# N = 50
+# A = rand(N, 3)
+# B = A .+ 0.2 .* randn(N, 3) # B is a noisy version of A
+
+# # Call the function
+# fig = plot_linked_points(A, B)
+# display(fig)
+
+function findvrange(mu_0, taus)
+
+    vmin = Inf
+    vmax = -Inf
+
+    for i in 1:length(mu_0)
+        for k in 1:length(taus)
+            v = 1.0/(1.0 - exp(-mu_0[i]/taus[k]))
+            if v>vmax
+                vmax = v
+            end
+            if v<vmin
+                vmin = v
+            end
+        end
+    end
+
+    return vmin, vmax
+
+end

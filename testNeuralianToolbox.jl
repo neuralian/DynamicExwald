@@ -1566,11 +1566,18 @@ function map_SLIF2Exwald(N::Int64=8000)
     # default ..., 41))[1:40]
     # 11))[1:10]
     # 21))[1:20]   
-    mu_0 = collect(logrange(.005, 0.1, 6))[1:5]
-    N_mu = length(mu_0)
-    sigma = collect(logrange(1.0e-4, 1.0e4, 11))[1:10]   # from e2-e6
+    # 13))[1:12]
+
+    # following grid search maps out the region of (v0, sigma, tau) 
+    # parameter space of the fractional SLIF model 
+    # corresponding to empirical Exwald ISI models
+    # (i.e. roughly identifies an Orstein-Uhlenbeck SDE model with 
+    #  fractional noise input, as a model of canal afferents)
+    v0 = collect(logrange(1.0, 50.0, 10))
+    N_v0 = length(v0)
+    sigma = [.005]  #collect(logrange(5.0e-4, 5.0e-2, 3)) #collect(logrange(1.0e-4, 1.0e4, 10)) #[1:6]    # from e2-e6
     N_sigma = length(sigma)
-    taus = collect(logrange(.005, 0.025, 11))[1:10]
+    taus = collect(logrange(1.0e-3, 1.0e1, 10)) #[1:10]
     N_tau = length(taus)
 
     colour = 0.01
@@ -1586,19 +1593,20 @@ function map_SLIF2Exwald(N::Int64=8000)
     ylims!(ax, .000001, 0.5)
 
     # Save/return fitted Exwald parameters and goodness of fit
-    EXWparam = fill((NaN, NaN, NaN), (N_mu, N_sigma, N_tau))
-    KLD = zeros(N_mu, N_sigma, N_tau)
+    EXWparam = fill((NaN, NaN, NaN), (N_v0, N_sigma, N_tau))
+    KLD = zeros(N_v0, N_sigma, N_tau)
 
     #@infiltrate
 
-    for i in 1:N_mu
+   # for i in 1:N_mu
+    for i in 1:N_v0
         for j in 1:N_sigma
             pInit = (NaN, NaN, NaN)
             for k in 1:N_tau
-                v0 = 1.0/(1.0 - exp(-mu_0[i]/taus[k]))  # drift required for expected FPT = mu[i]
+                #v0 = 1.0/(1.0 - exp(-mu_0[i]/taus[k]))  # drift required for expected FPT = mu[i]
                 println(i, ", ", j, ", ", k)
-                EXWparam[i, j, k] = fit_Exwald_to_SLIF( (v0, sigma[j], taus[k]), taus[k],
-                                                         N, pInit, (0.001, 0.05))
+                EXWparam[i, j, k] = fit_Exwald_to_SLIF( (v0[i], sigma[j], taus[k]), taus[k],
+                                                         N, pInit) #, (0.0005, 0.1))
                 println(EXWparam[i, j, k])
                # pInit = EXWparam[i, j, k]
             end
@@ -1613,11 +1621,11 @@ function map_SLIF2Exwald(N::Int64=8000)
 
  #   axislegend(ax, position = :rt) # :lb means 'left bottom'
    # display(F)
-   grid = (mu_0, sigma, taus)
+   grid = (v0, sigma, taus)
 
    # uncomment next line (& maybe pick a different file name) to auto-save 
    # using JLD2
-   # jldsave("OU2EXW_EXWparam.jld2", EXWparam, grid, KLD)
+   jldsave("OU2EXW_19Jan26C.jld2"; EXWparam, grid)
    # DATA = load("filename") to recover
 
     return    EXWparam, grid , F
@@ -1918,7 +1926,7 @@ function plot3D_fittedExwald_vs_SLIF(filename::String, sp::String)
    # DKL = D["V"]
 
     # index of SLIF parameter to encode in point color
-    w = findfirst(==(sp), ("mu", "lambda", "tau") )
+    w = findfirst(==(sp), ("mu", "sigma", "tau") )
 
     # find points in Exwald parameter space
     # where an Exwald model was fitted to a SLIF model 
@@ -1956,9 +1964,11 @@ function plot3D_fittedExwald_vs_SLIF(filename::String, sp::String)
                     push!(fsTau, sTau[k])
 
                     #S, _, _ = Exwald_entropy(EXWparam[i,j,k])
-                    #push!(pointColor, [sMu[i], sSigma[j], sTau[k]][w])
+                    push!(pointColor, [sMu[i], sSigma[j], sTau[k]][w])
+                    
+                    push!(pointColor, [sMu[i], sSigma[j], sTau[k]][w])
                     #push!(pointColor, DKL[i,j,k])
-                    push!(pointColor, cc)
+                    # push!(pointColor, sTau[k])
 
                     # end
                 end
@@ -2008,6 +2018,9 @@ function plot3D_fittedExwald_vs_SLIF(filename::String, sp::String)
     # end
 
     display(F)
+
+    # return the plotted points as Nx3 matrices
+    return hcat((xTau, xLambda, xMu)...), hcat((fsTau, fsSigma, fsMu)...)
 
 end
 

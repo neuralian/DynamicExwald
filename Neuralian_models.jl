@@ -499,12 +499,12 @@ function make_OU_neuron(OU_param::Tuple{Float64, Float64, Float64}, dt::Float64=
 end
 
 
-
 # returns SLIFneuron that takes 1 step in Ornstein-Uhlenbeck leaky drift-diffusion process
 # with coloured noise input, given cupula deflection δ(t)
 # closure returns true if v(t) reaches the barrier v==1 (neuron spiked), otherwise false
 # assumes input gain g=1, to be revisited
 function make_SLIF_neuron(SLIFparam::Tuple{Float64, Float64, Float64}, colour = 0.1, dt::Float64=DEFAULT_SIMULATION_DT)
+# deprecated but not dead yet ...
 
     # extract SLIF parameters
     (v0, sigma, tau) = SLIFparam
@@ -514,26 +514,30 @@ function make_SLIF_neuron(SLIFparam::Tuple{Float64, Float64, Float64}, colour = 
     v = 0.0
 
     # SDE coeffs pre-computed
-    A = dt/colour    
-    B = dt*sigma/sqrt(colour)
+    # A = dt/colour    
+    # B = dt*sigma/sqrt(colour)
 
     # initial noise 0.0
-    z = 0.0
+    #z = 0.0
 
-    pink = make_pink_noise(24)
+    pink = make_pink_noise(20)
 
     # set seed for debugging
     #Random.seed!(4242)
 
-    function SLIFneuron(δ::Function, t::Float64)
+    function SLIFneuron(δ::Function, t::Float64) # deprecated but not dead yet ...
 
         # coloured noise  dZ = -(1/tau_n)*Z*dt + sigma/sqrt(tau_n)*dW
         #  where dW is Wiener process (Brownian motion) step
-        dz = -A*z + B*rand(Normal())
-        z = z + dz
+        # dz = -A*z + B*rand(Normal())
+        # z = z + dz
+        # z = z + dz
 
+        d = 1.0   # coeff of v in C dv/vt + d*v = I
         # leaky integrate with coloured noise input
-        dv = ( v0 + g*δ(t) - v )*dt/tau + sigma*pink()*sqrt(dt)   
+        # TBD parameter tau here should be C (such that tau = d/C)
+        # dv = ( v0 + g*δ(t) - d*v/tau )*dt + sigma*pink()*sqrt(dt)
+        dv = ( v0 + g*δ(t) - d*v )*dt/tau + sigma*pink()*sqrt(dt)
 
         v = v + dv
         if v >= barrier      
