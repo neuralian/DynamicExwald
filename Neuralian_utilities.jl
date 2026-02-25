@@ -314,6 +314,17 @@ function scaled_Exwaldpdf(mu::Float64, lambda::Float64, tau::Float64, t::Vector{
 
 end
 
+
+function lambertWNormal_sample(d::Float64= 0.1)
+
+    z = randn()[]
+    return w = z*exp(0.5*d*z^2)
+
+end
+
+
+
+
 # Function to compute Oustaloup approximation parameters
 function oustaloup_zeros_poles(alpha::Float64, N::Int, wb::Float64, wh::Float64)
     M = 2 * N + 1
@@ -1618,7 +1629,7 @@ function plot_linked_points(A::Matrix{Float64}, B::Matrix{Float64})
         end
     end
 
-    return fig
+    return fig, ax1, ax2
 end
 
 # --- Example Usage ---
@@ -1649,5 +1660,143 @@ function findvrange(mu_0, taus)
     end
 
     return vmin, vmax
+
+end
+
+# set of n points uniformly distributed in log-log axes
+# along a line between a = (x0, y0) and b = (x1,y1)
+# (where a and b are untransformed coords) 
+function points_along_lineLogLog(a, b, n)
+
+    # transform to log-log space
+    x0L, y0L = log10(a[1]), log10(a[2])
+    x1L, y1L = log10(b[1]), log10(b[2])
+
+    # slope in log-log space
+    s = (y1L-y0L)/(x1L - x0L)
+    println("Slope = ", s)
+
+    # n points along the line
+    xL = range(x0L, x1L, length = n)
+    yL = range(y0L, y1L, length = n)
+
+    # back transform 
+    x = 10.0 .^ xL
+    y = 10.0 .^ yL
+
+    return x,y, s
+
+end
+
+# n equally spaced points along a straight line of length Length
+# and slope slope in log-log axes
+function points_along_lineLogLog(x0, y0, len, slope, n)
+   
+    # start point in log space
+    x0L, y0L = log10(x0), log10(y0)
+    
+    # slope in radians
+    θ = atan(slope)
+    
+    # distances along the line
+    d = range(0, len, length=n)
+    
+    # log-space coordinates of points on line
+    xL = x0L .+ d .* cos(θ)
+    yL = y0L .+ d .* sin(θ)
+
+    # Transform back 
+    return 10 .^ xL, 10 .^ yL
+end
+
+using GLMakie
+
+
+#  n points on a circle of radius 'r' in log-log axes
+function log_circle(x_center, y_center, r, n=8)
+    # 1. Move the center to log-space
+    lc_x = log10(x_center)
+    lc_y = log10(y_center)
+    
+    # 2. Generate angles from 0 to 2π
+    #θ = range(0, 2π, length=n)
+    θ = 2pi*(0:n-1)/n
+
+    # 3. Calculate points on the circle in log-space
+    # x = center + r*cos(θ), y = center + r*sin(θ)
+    lx_points = lc_x .+ r .* cos.(θ)
+    ly_points = lc_y .+ r .* sin.(θ)
+    
+    # 4. Transform back to original units
+    return 10 .^ lx_points, 10 .^ ly_points
+end
+
+# # --- Visualization ---
+# x_c, y_c = 100.0, 100.0  # Center of the circle
+# radius = 0.5            # Radius in log-units (half an order of magnitude)
+
+# x_vals, y_vals = log_circle(x_c, y_c, radius, 16)
+
+# fig = Figure()
+# ax = Axis(fig[1, 1], 
+#     xscale = log10, 
+#     yscale = log10,
+#     aspect = DataAspect(), # Essential: makes 1 unit on x equal 1 unit on y visually
+#     title = "Circle in Log-Log Space"
+# )
+
+# scatter!(ax, x_vals, y_vals, color = :magenta)
+# scatter!(ax, [x_c], [y_c], color = :black) # Plot the center point
+
+# display(fig)
+
+
+# v0 parameter of SLIF model required to get mean interval length mu 
+# given time constant tau (with threshold 1)
+# i.e. input current required for deterministic leaky integrator 
+# with time constant tau to reach threshold
+function SLIF_v0(mu::Float64, tau::Float64)
+
+    return 1.0/(1-exp(-mu/tau))
+
+end
+
+# ISI distribution
+# returns bin_count, relative_frequency, bin_edges and bin centres given ISIs 
+function ISI_distribution(ISI::Vector{Float64}; 
+                            maxT::Float64 = -1.0, nbins::Int64= -1, bw::Float64 = -1.0)
+
+    # if extent of histogram is not specified, choose maxT large enough to cover the data
+    if maxT<0.0
+        maxT = 1.25*maximum(ISI) 
+    end
+
+    # figure out binwidth and number of bins 
+    if nbins<0                  
+        if bw < 0.0             
+            nbins = 32              # nbins not specified, bw not specified -> set default nbins
+            bw = maxT/nbins         #                                       -> compute bw
+        else 
+            nbins = ceil(maxT/bw)   # nbins not specified, bw specified -> compute nbins 
+            maxT = bw*nbins         # adjust maxT to encompass a whole number of bins
+        end
+    else
+        if bw>0.0
+            @warn "nbins over-rides binwidth when both are specified"
+        end
+        bw = maxT/nbins             # nbins specified -> compute bw even if it was specified
+    end
+
+    bin_edges = collect(0.0:bw:maxT)
+
+    H = fit(Histogram, ISI, bin_edges) # uses Statsbase.jl
+
+    # relative frequencies in bins 
+    freqs = H.weights./(sum(H.weights)*bw)
+
+    bin_centres = collect((bin_edges[2:end] + bin_edges[1:(end-1)])*0.5)
+
+    # return counts, frequencies, bin edges and bin centres
+    return H.weights, freqs, bin_edges, bin_centres
 
 end

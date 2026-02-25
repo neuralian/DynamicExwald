@@ -333,6 +333,66 @@ function test_Exwald_Neuron_spontaneous(N::Int64,
 
 end
 
+# test dynamic Exwald with no stimulus
+# SLIFparam = (v0, sigma, tau)
+function test_SLIF_Neuron_spontaneous( N::Int64,
+                                       SLIFparam::Tuple{Float64,Float64,Float64}, 
+                                       pinkness::Int64=8, 
+                                       dt::Float64=1.0e-3)
+
+    SLIFneuron = make_SLIF_neuron(SLIFparam, pinkness, dt) 
+    maxISI = 1000.0 # *dt
+    ISI = interspike_intervals(SLIFneuron, t->0.0, N, maxISI, dt)
+
+    #@infiltrate
+
+    mu = mean(ISI)
+    v = var(ISI)
+    println("mu = ", mu, ", lambda = ", mu^3/v)
+ 
+
+
+
+    F = Figure()
+    ax = Axis(F[1,1])
+
+    hist!(ISI, bins=64, normalization=:pdf)
+    # label=@sprintf "Simulation")
+    #xlims!(0.0, xlims(ax)[2])
+
+    # T = maximum(diff(spt))
+    # t = collect(0.0:dt:T)
+
+    # X = Exwaldpdf(mu, lambda, tau, t)
+    # W = pdf(InverseGaussian(mu, lambda), t)
+    # P = exp.(-t ./ tau) ./ tau
+
+    # lw = 2.5
+    # lines!(t, W, linewidth=lw)
+    # #    label=@sprintf "Wald (%.5f, %.5f)" mu lambda)
+    # lines!(t, P, linewidth=lw)
+    # # label=@sprintf "Exponential (%.5f)" tau)
+    # lines!(t, X, linewidth=lw * 1.5)
+    # # label=@sprintf "Exwald (%.5f, %.5f, %.5f)" mu lambda tau)
+
+    # ymax = max(maximum(X), maximum(W)) * 1.25
+    # ylims!(0.0, ymax)
+
+
+    # xlims!(0.0, T)
+    # ylims!(0.0, 2.0 * maximum(X))
+    ax.title = "SLIF Neuron Model Spontaneous ISI"
+
+    # text!(ax, T/2.0, 0.8*ymax, text = @sprintf "μ = %.5f" mu)
+    # text!(ax, T/2.0, 0.75*ymax, text = @sprintf "λ = %.5f" lambda)
+    # text!(ax, T/2.0, 0.7*ymax, text = @sprintf "τ = %.5f" tau)
+    
+    display(F)
+
+
+end
+
+
 # demo inhomogenous Exwald neuron with sinusoidal stimulus
 # stimulus parameters Stim_param = (A, F), A = amplitude, F = frequency (Hz)
 # NB stimulus amplitude is plotted x10 for visibility
@@ -1403,15 +1463,31 @@ function test_fit_Exwald_neuron_stationary(N::Int64, mu::Float64, lambda::Float6
     # spontaneous interspike intervals 
     ISI =  diff(vcat([0.0], Exwald_Neuron_Nspikes(N, (mu, lambda, tau), t->0.0)))
 
-    (maxf, p, ret) = Fit_Exwald_to_ISI(ISI, [mu, lambda, tau],  [0.1, 0.1, 0.1])
+    #@infiltrate
 
-    dt = 1.0e-3
-    T = maximum(ISI)
-    t = collect(dt:dt:T)
-    histogram(ISI, normalize=:pdf)
-    plot!(t, Exwaldpdf(p[1], p[2], p[3], t), linewidth=2)
-    display(plot!(t, Exwaldpdf(mu, lambda, tau, t), linewidth=2))
+    (p, ret) = Fit_Exwald_to_ISI(ISI, [mu, lambda, tau]) #,  [0.1, 0.1, 0.1])
 
+    # dt = 1.0e-3
+    # T = maximum(ISI)
+    # t = collect(dt:dt:T)
+    # hist(ISI, normalize=:pdf)
+
+    counts, f_bin, bin_edges, bin_centres = ISI_distribution(ISI, nbins=128)
+
+    F = Figure()
+    ax = Axis(F[1,1], title = "Exwald model fitted to SLIF intervals")
+
+    stairs!(ax, bin_centres, f_bin,color = :maroon, label = "")
+
+    T = maximum(bin_edges)
+    bw = bin_edges[2] - bin_edges[1]
+    t = collect( 0.0:(bw/5.0):T )
+
+    lines!(t, Exwaldpdf(p[1], p[2], p[3], t), linewidth=2)
+    lines!(t, Exwaldpdf(mu, lambda, tau, t), linewidth=2)
+
+    display(F)
+    p
 
 end
 
@@ -1553,14 +1629,11 @@ function demo_Bayesian_infer_binary_state_from_spiketrain(T::Float64 = 1.0, dt::
 
 end
 
-# construct a map from fractional Ornstein-Uhlenbeck FPT (SLIF neuron) to Exwald parameters
-# plots results as it goes so you don't get bored
-# (It takes about 24hrs to run on my PC with default parameters, Nov 2025)
-# Outputs of this function, EXWparam and param_grid, are used by 
-# SLIF2Exwald() and Exwald2SLIF() 
-# OU2EXW_map, grid = map_OU2Exwald()
-# Remember to capture and save returned variables, 
-#     or uncomment the @save command at the bottom to auto-save
+# construct a map from fractional Ornstein-Uhlenbeck FPT (SLIF neuron)
+# parameter space to Exwald parameters over a grid of points
+# This is very slow, used to explore SLIF parameter space & identify
+# a region where ISI distributions of fractional SLIF models match
+# empirical ISI distributions of vestibular afferents  
 function map_SLIF2Exwald(N::Int64=8000)
  
     # default ..., 41))[1:40]
@@ -1575,7 +1648,7 @@ function map_SLIF2Exwald(N::Int64=8000)
     #  fractional noise input, as a model of canal afferents)
     v0 = collect(logrange(1.0, 50.0, 10))
     N_v0 = length(v0)
-    sigma = [.005]  #collect(logrange(5.0e-4, 5.0e-2, 3)) #collect(logrange(1.0e-4, 1.0e4, 10)) #[1:6]    # from e2-e6
+    sigma = [.004, .005, .006]  #collect(logrange(5.0e-4, 5.0e-2, 3)) #collect(logrange(1.0e-4, 1.0e4, 10)) #[1:6]    # from e2-e6
     N_sigma = length(sigma)
     taus = collect(logrange(1.0e-3, 1.0e1, 10)) #[1:10]
     N_tau = length(taus)
@@ -1625,35 +1698,187 @@ function map_SLIF2Exwald(N::Int64=8000)
 
    # uncomment next line (& maybe pick a different file name) to auto-save 
    # using JLD2
-   jldsave("OU2EXW_19Jan26C.jld2"; EXWparam, grid)
+   jldsave("OU2EXW_19Jan26D.jld2"; EXWparam, grid)
    # DATA = load("filename") to recover
 
     return    EXWparam, grid , F
 
 end
 
-# Fit Exwald model to SLIF neuron
+
+# map points along a line in SLIF parameter space 
+# to Exwald parameters
+function linemap_SLIF2Exwald(N::Int64=400)
+ 
+    # using map_SLIF2Exwald (above) identified a line in 
+    # (v0, sigma, tau_s) SLIF parameter space corresponding (roughly)
+    # to the 1st principle axis of Exwald models (PP&H figure 3).
+    # This line goes through a = (.00774, .005, 2.385) and b = (.464, .005, 50.0) 
+    # in SLIF space.  Sigma (noise amplitude) is constan so we drop to 2D. 
+    # The line has slope S = 0.634 in log-log axes, 
+    # i.e. in "real" parameter space there is a power law relatioship
+    # between v0 and tau_s:  v0 = 10^v00 * tau_s^S.
+    # The distance between endpoints is about L = 2 (log units).
+    # So a rough starting point, identified by a coarse grid search,
+    # is that the SLIF parameters are on a line of length L with slope S
+    # starting at a.
+    
+    # SLIF parameter line parameters
+    tau_0, v0_0 = (.005, 2.4) #(.003, 0.6) #(.00774, 2.385) 
+    L =  3.0
+    S =  0.67
+    sigma_s = 0.005
+    n_pts = 32
+
+    # get n points along this line
+    tau_s, v0 = points_along_lineLogLog(tau_0, v0_0, L, S, n_pts)
+
+    # F = Figure()
+    # ax = Axis(F[1,1], xscale = log10, yscale = log10, 
+    #             xlabel = "SLIF τ",
+    #             ylabel = "SLIF v0",
+    #             xtickformat = "{:.4f}", ytickformat = "{:.5f}")
+    # xlims!(ax, 1.0e-3, 1.0e1)
+    # ylims!(ax, 1.0e0, 1.0e2)
+
+    # Save/return fitted Exwald parameters and goodness of fit
+    EXWparam = fill((NaN, NaN, NaN), n_pts)
+    KLD = zeros(n_pts)
+
+    #@infiltrate
+
+    for i in 1:n_pts
+
+        EXWparam[i] = fit_Exwald_to_SLIF( (v0[i], sigma_s, tau_s[i]), 
+                    0.1, N) #, (0.0005, 0.1))
+        println(i, ", ", EXWparam[i])
+
+    end 
+
+    F = Figure()
+    ax1 = Axis(F[1,1], xscale = log10, yscale = log10, 
+                xlabel = "SLIF τ",
+                ylabel = "SLIF v0",
+                xtickformat = "{:.4f}", ytickformat = "{:.5f}")
+    xlims!(ax1, 1.0e-3, 1.0e1)
+    ylims!(ax1, 1.0e0, 5.0e2)
+    ax1.title = @sprintf("(%.4f, %.4f), L = %.1f, S = %.2f, sigma = %.4f",
+                tau_0, v0_0, L, S, sigma_s)
+
+    scatter!(ax1, tau_s, v0)
+
+     ax2 = Axis(F[1,2], xscale = log10, yscale = log10, 
+                xlabel = "Exwald τ",
+                ylabel = "Exwald λ",
+                xtickformat = "{:.4f}", ytickformat = "{:.5f}")
+     xlims!(ax2, 1.0e-5, 1.0e-1)
+     ylims!(ax2, 1.0e-2, 1.0e2)   
+
+  scatter!(ax2, [EXWparam[i][3] for i in 1:n_pts], 
+                [EXWparam[i][2] for i in 1:n_pts])
+
+
+    display(F)   
+
+   # uncomment next line (& maybe pick a different file name) to auto-save 
+   # using JLD2
+   #jldsave("OU2EXW_line_19Jan26D.jld2"; EXWparam, grid)
+   # DATA = load("filename") to recover
+
+    return    EXWparam, tau_s, v0, F, ax1, ax2
+
+end
+
+
+# map points on a circle around a point in SLIF parameter space 
+# to Exwald parameters. Changed units from s to ms.
+function ringmap_SLIF2Exwald(N::Int64=400)
+ 
+    
+    # SLIF tau-v0 parameter centre point (ms)
+    tau_0, v0_0 = (25.0, 3000.0) 
+
+    # SLIF current noise amplitude 
+    sigma_s = 0.005
+
+    # (log) radius of circle in SLIF parameter space
+    R = .1
+
+    # points on circle
+    nn = 4
+    tau_s, v0 = log_circle(x_c, y_c, R, nn)
+
+    # Save/return fitted Exwald parameters and goodness of fit
+    EXWparam = fill((NaN, NaN, NaN), nn+1)
+    KLD = zeros(nn)
+
+
+
+    # fit centre point
+    EXWparam[1] = fit_Exwald_to_SLIF( (v0_0, sigma_s, tau_0), 0.1, N)
+    println(1, ", ", EXWparam[1])
+
+    for i in 2:(nn+1)
+   # @infiltrate
+     println(i, v0[i-1], tau_s[i-1])
+        EXWparam[i] = fit_Exwald_to_SLIF( (v0[i-1], sigma_s, tau_s[i-1]), 0.1, N) 
+        println(i, ", ", EXWparam[i])
+
+    end 
+
+    F = Figure()
+    ax1 = Axis(F[1,1], xscale = log10, yscale = log10, 
+                xlabel = "SLIF τ",
+                ylabel = "SLIF v0",
+                xtickformat = "{:.4f}", ytickformat = "{:.5f}")
+    xlims!(ax1, 1.0e-3, 1.0e1)
+    ylims!(ax1, 1.0e0, 5.0e2)
+    ax1.title = @sprintf("(%.4f, %.4f), L = %.1f, S = %.2f, sigma = %.4f",
+                tau_0, v0_0, L, S, sigma_s)
+
+    scatter!(ax1, tau_s, v0)
+
+     ax2 = Axis(F[1,2], xscale = log10, yscale = log10, 
+                xlabel = "Exwald τ",
+                ylabel = "Exwald λ",
+                xtickformat = "{:.4f}", ytickformat = "{:.5f}")
+     xlims!(ax2, 1.0e-5, 1.0e-1)
+     ylims!(ax2, 1.0e-2, 1.0e2)   
+
+  scatter!(ax2, [EXWparam[i][3] for i in 1:n_pts], 
+                [EXWparam[i][2] for i in 1:n_pts])
+
+
+    display(F)   
+
+   # uncomment next line (& maybe pick a different file name) to auto-save 
+   # using JLD2
+   #jldsave("OU2EXW_line_19Jan26D.jld2"; EXWparam, grid)
+   # DATA = load("filename") to recover
+
+    return    EXWparam, tau_s, v0, F, ax1, ax2
+
+end
+
+
+# Fit Exwald model to SLIF neuron with no input. Cdv/dt = v0 -v*g + sigma*dw  
 # via interval distribution
-function demo_fit_Exwald2SLIF(SLIFparam::Tuple{Float64, Float64, Float64}, N::Int64=1000,
+# SLIFparam = (v0, sigma, C, g)
+function demo_fit_Exwald2SLIF(SLIFparam::Tuple{Float64, Float64, Float64, Float64}, N::Int64=1000,
       dt::Float64=DEFAULT_SIMULATION_DT)
 
-    # fit Exwald model to SLIF model intervals
-    EXWparam = fit_Exwald_to_SLIF(SLIFparam, N)
+    # # fit Exwald model to SLIF model intervals
+    # EXWparam = fit_Exwald_to_SLIF(SLIFparam, N)
 
-    # compare fitted model to independent sample generated by an identical SLIF neuron
-    SLIFneuron = make_SLIF_neuron(SLIFparam, dt) 
+    # generate intervals using SLIF neuron
+    SLIFneuron = make_SLIF_neuron(SLIFparam) 
     ISI = interspike_intervals(SLIFneuron, t->0.0, N) 
 
-    # frequency histogram
-    T = 1.25*maximum(ISI)  # longest interval 
-    bw = T/128.0; #max(Int(round(N/500)), 32)   # at least 32 bins
-    bin_edges = 0.0:bw:T
-    t = collect(0.0:(bw/10):T)
-    H = fit(Histogram, ISI, bin_edges) 
+    # fit Exwald distribution to ISI Distribution
+    fitted_EXWparam, goodness_of_fit = Fit_Exwald_to_ISI(ISI) 
 
-    # relative frequency histogram 
-    f_bin = H.weights./(sum(H.weights)*bw)
-    bin_centres = collect((bin_edges[2:end] + bin_edges[1:(end-1)])*0.5)
+    counts, f_bin, bin_edges, bin_centres = ISI_distribution(ISI,nbins = 64)
+    bw = bin_edges[2] - bin_edges[1]
 
     F = Figure()
     ax = Axis(F[1,1], title = "Exwald model fitted to SLIF intervals")
@@ -1662,17 +1887,17 @@ function demo_fit_Exwald2SLIF(SLIFparam::Tuple{Float64, Float64, Float64}, N::In
 
     SLIF_label = @sprintf "SLIF: μ = %.3f, λ = %.3f, τ = %.3f" SLIFparam[1] SLIFparam[2] SLIFparam[3]
     stairs!(bin_centres, f_bin,color = :maroon, label = SLIF_label)
-    grid = collect( 0.0:bw/10.0:T )
-    EXW_label = @sprintf "Exwald: μ = %.3f, λ = %.3f, τ = %.3f" EXWparam[1] EXWparam[2] EXWparam[3]
-    lines!(grid, Exwaldpdf(EXWparam..., grid), 
-            linewidth=2, color = :blue, label = EXW_label)
+    grid = collect( 0.0:(bw/10.0):maximum(bin_edges) )
+    EXW_label = @sprintf "Exwald: μ = %.3f, λ = %.3f, τ = %.3f" fitted_EXWparam[1] fitted_EXWparam[2] fitted_EXWparam[3]
+    lines!(grid, Exwaldpdf(fitted_EXWparam..., grid), linewidth=2, color = :blue, label = EXW_label)
 
     axislegend(ax, position = :rt)
 
     display(F)
 
     # return fitted parameters and figure handle
-    return EXWparam, F
+    #return fitted_EXWparam, F
+    return F
 
 end
 

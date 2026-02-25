@@ -299,24 +299,97 @@ function sfit_Exwald(ISI::Vector{Float64};
     return tuple(exp.(sol.u)...) , sol.objective
 end
 
+# fit Exwald distribution to interval data
+# returns parameters μ, λ, τ
+#Fit_Exwald_to_ISI(ISI, [mu, lambda, tau],  [0.1, 0.1, 0.1])
+function Fit_Exwald_to_ISI(ISI::Vector{Float64},
+            pInit::Vector{Float64}=[NaN, NaN, NaN], max_iter=100, tol=1e-6)
+    
+          #  @infiltrate
+    # initial estimates from summary stats
+    # divide average interval into halves avg = μ + τ
+    if any(isnan.(pInit))  # if pInit was not specified or is invalid
+        avg = mean(ISI)
+        V = mean(ISI.^2) - avg^2  # data variance = E[x^2] - E[x]^2
+        cv = sqrt(V)/avg
+        w = min(cv, 0.95)
+        τ = w*avg
+        μ = (1.0-w)*avg
+        λ = μ/cv^2
+        pInit = [μ, λ, τ]
+    end # otherwise pInit was passed as argument
+
+    # parameter bounds 
+    avg = pInit[1]+pInit[3]
+    LB = [log(1.0e-4), log(1.0e-3), log(1.0e-6)]  # lower bounds (empirical, from PP&H data)
+    UB = [log(10.0*avg), log(100.0*pInit[2]), log(10.0*avg) ]    # upper bounds
+       
+    # initial parameters as vector
+    pInit = log.(collect(pInit))
+    println(" ", pInit)
+
+    grad = zeros(Float64, length(pInit))   # required input to fitting code but not used
+
+    # Goodness of fit is mean squared error
+    # SumSquaredError = (param, grad) -> sum( (bin_count - pdf.(InverseGaussian(param...), bincentre)).^2)
+
+    # Goodness of fit is Kullback-Leibler divergence from data to model
+    # dist = param -> Exwaldpdf(exp.(param)..., bin_centre, true) # renormalized Exwald
+    # KL_divergence = (param, grad) -> KLD(f_bin, dist(param), bw)
+    KL_divergence = (param, grad) -> sKLD(ISI, d->Exwaldpdf(exp.(param)..., d) )
+
+
+    #optStruc = Opt(:LN_NELDERMEAD,3)  # set up 3-parameter NLopt optimization problem
+
+    # set up optimization
+ #   optStruc = Opt(:LN_NELDERMEAD, length(pInit))  
+    # optStruc = Opt(:LN_PRAXIS, length(pInit)) 
+    # NLopt.min_objective!(optStruc, KL_divergence)      
+    # NLopt.lower_bounds!(optStruc, zeros(Float64, length(pInit)))  # constrain parameters > 0
+    # NLopt.xtol_abs!(optStruc, 1.0e-12)
+    f = OptimizationFunction(KL_divergence)
+    Prob = Optimization.OptimizationProblem(f, pInit, grad, lb=LB, ub = UB)
+    sol = solve(Prob, NLopt.LN_NELDERMEAD(), reltol = 1.0e-9)
+ 
+  #  fitted_param = (sol.u[1], sol.u[1]/sol.u[2]^2, sol.u[3])
+
+    #@infiltrate
+    return tuple(exp.(sol.u)...) , sol.objective
+end
+
 
 # fit Exwald parameters to SLIF neuron =
 # Ornstein-Uhlenbeck first passage time model tau.dx/dt + x = N(v0, sigma), barrier==1
-# given SLIF parameters  (v0, sigma, tau) 
+# given SLIF parameters  (v0, sigma, C, g) 
+#                      = (resting input current, noise sd, Capacitance, leak conductance)
+#  pinkness = number of steps in fractional noise integrator (integration time = 2^pinkness*dt)
+#  w = lambert w, determines heaviness of noise tails, w=0 for Gaussian, 0<w,1 for heavy tail
 # Returns Exwald parameters (μ, λ, τ) fitted to SLIF neuron intervals
-# pInit =  initial parameters
-# meanrange = valid range of mean ISI, returns (NaN, NaN, NaN) outside this range
-# (allows neurons with unrealistically high or low firing rates to be skipped during searches)
-function fit_Exwald_to_SLIF(SLIFparam::Tuple{Float64, Float64, Float64}, colour = 0.1, N::Int64=10000, 
-                pInit::Tuple{Float64, Float64, Float64}=(NaN, NaN, NaN), 
-                meanrange::Tuple{Float64, Float64} = (0.0, 1.0), timeout::Float64=1.0, dt::Float64=DEFAULT_SIMULATION_DT)
+# pInit =  initial parameters for fitting
+function fit_Exwald_to_SLIF(    SLIFparam::Tuple{Float64, Float64, Float64, Float64}, 
+                                pinkness::Int64=8, w::Float64 = 0.0, 
+                                N::Int64=500, 
+                                pInit::Tuple{Float64, Float64, Float64}=(NaN, NaN, NaN), 
+                                maxISI::Float64=1000.0, 
+                                dt::Float64=DEFAULT_SIMULATION_DT)
 
-    SLIFneuron = make_SLIF_neuron(SLIFparam, colour, dt) 
-    ISI = interspike_intervals(SLIFneuron, t->0.0, N) 
-    if length(ISI)<N  || mean(ISI)<meanrange[1] || mean(ISI)>meanrange[2] 
-        # neuron model does not generate plausible intervals, skip it
+
+    SLIFneuron = make_SLIF_neuron(SLIFparam, pinkness, w, dt) 
+    ISI = interspike_intervals(SLIFneuron, t->0.0, N)
+
+    #println(length(ISI), ", ", minimum(ISI), ", ", maximum(ISI))
+
+    if length(ISI)<N  || minimum(ISI)<0.0 || maximum(ISI)>maxISI
+        # sanity check
         return (NaN, NaN, NaN)  
     end
+
+    #JIT = 1.0e-7
+    # #jitter = JIT*randn(length(Spiketime))  # Gaussian jitter
+    SAMPLE_RES = 0.3
+    # # measure spiketimes @ 300us (0.3ms) resolution
+    spiketime = round.((cumsum(ISI) ./ SAMPLE_RES)) .* SAMPLE_RES
+    ISI = diff(vcat([0], spiketime))  # convert back to intervals
 
 #   #  println(", ", any(isnan.(f_bin)), ", ", any(isinf.(f_bin)), ", ", maximum(f_bin))
 #     EXWparam, ob = sfit_Exwald(ISI, pInit=pInit)
@@ -333,14 +406,15 @@ function fit_Exwald_to_SLIF(SLIFparam::Tuple{Float64, Float64, Float64}, colour 
         V = mean(ISI.^2) - avg^2  # data variance = E[x^2] - E[x]^2
         if V<1.0e-8
             println(V)
-            return (NaN, NaN, NaN)
+            return (avg, Inf, 0.0)
         end
         cv = sqrt(V)/avg
-        w = min(cv/4.0 , 0.95)
+        w = min(cv, .95)
         τ = w*avg
-        μ = (1.0-w)*avg
-        λ = μ/cv^2
+        μ = max(8.0, avg-τ)
+        λ = μ/V^3
         pInit = [μ, λ, τ]
+       # pInit = [10.0, 1000.0, 1.0] + 0.1*[10.0, 1000.0, 1.0].*randn()[]
     end 
 
     # if (avg > .1) || (avg < .01)  # rate > 100 or < 10
@@ -348,8 +422,9 @@ function fit_Exwald_to_SLIF(SLIFparam::Tuple{Float64, Float64, Float64}, colour 
     # else
 
     # parameter bounds 
-    LB = [log(1.0e-5), log(1.0e-4), log(1.0e-7)]  # lower bounds (empirical, from PP&H data)
-    UB = [log(100.0*avg),  log(100.0*pInit[2]), log(100.0*avg) ]    # upper bounds
+    LB = [log(1.0e-8), log(1.0e-7), log(1.0e-10)]  # lower bounds (empirical, from PP&H data)
+    UB = [log(10000.0*avg),  log(10.0*pInit[2]), log(10000.0*avg) ]    # upper bounds
+   # UB = [log(100.),  log(10.0*pInit[2]), log(1000.) ]    # upper bounds
        
     # initial parameters as vector
     pInit = log.(collect(pInit))
@@ -375,8 +450,8 @@ function fit_Exwald_to_SLIF(SLIFparam::Tuple{Float64, Float64, Float64}, colour 
     # NLopt.lower_bounds!(optStruc, zeros(Float64, length(pInit)))  # constrain parameters > 0
     # NLopt.xtol_abs!(optStruc, 1.0e-12)
     f = OptimizationFunction(KL_divergence)
-    Prob = Optimization.OptimizationProblem(f, pInit, grad) #, lb=LB, ub = UB)
-    sol = solve(Prob, NLopt.LN_PRAXIS(), abstol = 1.0e-12)
+    Prob = Optimization.OptimizationProblem(f, pInit, grad, lb=LB, ub = UB)
+    sol = solve(Prob, NLopt.LN_PRAXIS(), reltol = 1.0e-6)
  
   #  fitted_param = (sol.u[1], sol.u[1]/sol.u[2]^2, sol.u[3])
 
@@ -430,7 +505,8 @@ function fit_Exwald_to_qSLIF(SLIFparam::Tuple{Float64, Float64, Float64}, q::Flo
 
     # parameter bounds 
     LB = [log(1.0e-5), log(1.0e-4), log(1.0e-7)]  # lower bounds (empirical, from PP&H data)
-    UB = [log(100.0*avg),  log(100.0*pInit[2]), log(100.0*avg) ]    # upper bounds
+    UB = [log(100.0*avg),  log(100.0*pInit[2]), log(100.0*avg) ]  
+    UB = [100., 10000., 100.]  # upper bounds
        
     # initial parameters as vector
     pInit = log.(collect(pInit))
@@ -457,7 +533,7 @@ function fit_Exwald_to_qSLIF(SLIFparam::Tuple{Float64, Float64, Float64}, q::Flo
     # NLopt.xtol_abs!(optStruc, 1.0e-12)
     f = OptimizationFunction(KL_divergence)
     Prob = Optimization.OptimizationProblem(f, pInit, grad, lb=LB, ub = UB)
-    sol = solve(Prob, NLopt.LN_PRAXIS(), abstol = 1.0e-12)
+    sol = solve(Prob, NLopt.LN_NELDERMEAD(), abstol = 1.0e-12)
  
   #  fitted_param = (sol.u[1], sol.u[1]/sol.u[2]^2, sol.u[3])
 

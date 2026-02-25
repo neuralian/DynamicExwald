@@ -13,5 +13,5 @@ include("Neuralian_models.jl")
 include("NeuralianFit.jl")
 include("NeuralianBayesian.jl")
 
-DEFAULT_SIMULATION_DT = 1.0e-7
+DEFAULT_SIMULATION_DT = 1.0e-4
 PLOT_SIZE = (800, 600)
