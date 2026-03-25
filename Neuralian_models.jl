@@ -524,76 +524,116 @@ function make_OU_neuron(OU_param::Tuple{Float64, Float64, Float64}, dt::Float64=
 end
 
 
-# returns SLIFneuron that takes 1 step in Ornstein-Uhlenbeck leaky drift-diffusion process
-# with coloured noise input [ with cupula deflection δ(t) not implemented yet] 
-#  Cdv = (v0 - g*v)*dt + sigma*standardnoise*sqrt(dt) 
-# closure returns true if v(t) reaches the barrier v==1 (neuron spiked), otherwise false
-# assumes input gain g=1, to be revisited
-# Normality is shape parameter of Student T distribution (Nearly normal for T>=30)
-# SLIF parameters are (s_mu, s_lambda, s_tau, g)  prefix s_ to distinguish from Exwald parameters
-#  s_mu = Inverse Gaussian mean interval if s_tau = 0
-#  s_lambda = Inverse Gaussian lambda if s_tau = 0
-#  s_tau  = membrane time constant NB NOT Exwald tau (this makes ISI not IG)
-#  g     = membrane leak conductance NB capacitance  
-#
-# pinkness = noise correlation length, pinkness=1 for white noise
-# w = Lambert w parameter for heavy-tailed noise, w=0.0 for Gaussian (not heavy), 0<w<1
-function make_SLIF_neuron(SLIFparam::Tuple{Float64, Float64, Float64, Float64}, 
-                        pinkness::Int64=1, w::Float64=0.0, dt::Float64=DEFAULT_SIMULATION_DT)
+# # returns SLIFneuron that takes 1 step in Ornstein-Uhlenbeck leaky drift-diffusion process
+# # with coloured noise input [ with cupula deflection δ(t) not implemented yet] 
+# #  Cdv = (v0 - g*v)*dt + sigma*standardnoise*sqrt(dt) 
+# # closure returns true if v(t) reaches the barrier v==1 (neuron spiked), otherwise false
+# # assumes input gain g=1, to be revisited
+# # Normality is shape parameter of Student T distribution (Nearly normal for T>=30)
+# # SLIF parameters are (s_mu, s_lambda, s_tau, g)  prefix s_ to distinguish from Exwald parameters
+# #  s_mu = Inverse Gaussian mean interval if s_tau = 0
+# #  s_lambda = Inverse Gaussian lambda if s_tau = 0
+# #  s_tau  = membrane time constant NB NOT Exwald tau (this makes ISI not IG)
+# #  g     = membrane leak conductance NB capacitance  
+# #
+# # pinkness = noise correlation length, pinkness=1 for white noise
+# # w = Lambert w parameter for heavy-tailed noise, w=0.0 for Gaussian (not heavy), 0<w<1
+# function make_SLIF_neuron(SLIFparam::Tuple{Float64, Float64, Float64, Float64}, 
+#                         pinkness::Int64=1, w::Float64=0.0, dt::Float64=DEFAULT_SIMULATION_DT)
 
-    # extract given parameters
-    (s_mu, s_lambda, s_tau, g) = SLIFparam 
+#     # extract given parameters
+#     (s_mu, s_lambda, s_tau, g) = SLIFparam 
 
-    # compute SDE parameters from given parameters, specifying barrier height
-    (v0, sigma, barrier) = FirstPassageTime_parameters_from_Wald(s_mu, s_lambda, "barrier", 1.0)
+#     # compute SDE parameters from given parameters, specifying barrier height
+#     (v0, sigma, barrier) = FirstPassageTime_parameters_from_Wald(s_mu, s_lambda, "barrier", 1.0)
 
-    # capacitance is time constant x conductance (tau = r*c, g = 1/r)
-    C = s_tau*g
+#     # capacitance is time constant x conductance (tau = r*c, g = 1/r)
+#     C = s_tau*g
 
-    a = 1.0  
-    v = 0.0  # initial = resting membrane potential
+#     a = 1.0  
+#     v = 0.0  # initial = resting membrane potential
 
-    # pink noise generator, pinkness is number of integration steps (fractional memory length)
-    #  = 1 for white noise
-    # w is Lambert w parameter for LambertW Gaussian distribution, 
-    #   = standard Gaussian when w=0
-    # NB pinknoise(false) generates next sample, pinknoise(true) re-initializes noise sequence
-    #    call pinknoise(true) after each spike for independent intervals (renewal process)
-    pinknoise = make_pinkish_noise(w, pinkness)
+#     # pink noise generator, pinkness is number of integration steps (fractional memory length)
+#     #  = 1 for white noise
+#     # w is Lambert w parameter for LambertW Gaussian distribution, 
+#     #   = standard Gaussian when w=0
+#     # NB pinknoise(false) generates next sample, pinknoise(true) re-initializes noise sequence
+#     #    call pinknoise(true) after each spike for independent intervals (renewal process)
+#     pinknoise = make_pinkish_noise(w, pinkness)
 
-    # set seed for debugging
-    #Random.seed!(4242)
+#     # set seed for debugging
+#     #Random.seed!(4242)
 
-    function SLIFneuron(δ::Function, t::Float64) 
+#     function SLIFneuron(δ::Function, t::Float64) 
 
-        # coloured noise  dZ = -(1/tau_n)*Z*dt + sigma/sqrt(tau_n)*dW
-        #  where dW is Wiener process (Brownian motion) step
-        # dz = -A*z + B*rand(Normal())
-        # z = z + dz
-        # z = z + dz
+#         # coloured noise  dZ = -(1/tau_n)*Z*dt + sigma/sqrt(tau_n)*dW
+#         #  where dW is Wiener process (Brownian motion) step
+#         # dz = -A*z + B*rand(Normal())
+#         # z = z + dz
+#         # z = z + dz
 
-        jitter = 0.0e-2
-        trunc = jitter*3.0
+#         jitter = 1.0e-6
+#         trunc = jitter*3.0
 
-       p = pinknoise(false)
+#        p = pinknoise(false)
 
-       #@infiltrate
+#        #@infiltrate
 
-        dv = ( v0 + a*δ(t) - g*v/C )*dt + sigma*p*sqrt(dt)  #sigma*pinkish()*sqrt(dt)
+#         #dv = ( v0 + a*δ(t) - g*v/C )*dt + sigma*p*sqrt(dt)  #sigma*pinkish()*sqrt(dt)
+#         dv = ( v0 + a*δ(t) - g*v )*dt/C + sigma*p*sqrt(dt)  #sigma*pinkish()*sqrt(dt)
 
-        v =v + dv
-        #println(p, ", ", v)
-        if (v + min(jitter*randn()[], trunc)) >= barrier      # crossed threshold
-            v = 0.0 #-= barrier    # reset integral 
-            pinknoise(true)       # reset coloured noise generator
-            return true     # spike
-        else
-            return false    # no spike
+#         v =v + dv
+#         #println(p, ", ", v)
+#         if (v + min(jitter*randn()[], trunc)) >= barrier      # crossed threshold
+#             v = 0.0 #-= barrier    # reset integral 
+#             pinknoise(true)       # reset coloured noise generator
+#             return true     # spike
+#         else
+#             return false    # no spike
+#         end
+
+#     end
+
+#     return SLIFneuron 
+# end
+
+
+# Returns closure that simulates 1 timestep (dt) of SLIF neuron
+#                 and returns true if the neuron fired, false otherwise.
+# Also returns the parameters (a, σ_v, tau) of the SLIF model
+#  dV   = (a + u(t) - V[] / tau) * dt + σ_v * sqrt_dt * randn()
+# 25MARCH26
+function make_SLIF_neuron(
+    mu::Float64,
+    lambda::Float64,
+    tau::Float64;
+    dt::Float64 = DEFAULT_SIMULATION_DT
+)
+    V_reset = 0.0
+    V_th    = 1.0
+    θ       = V_th - V_reset
+
+    a       = θ / mu
+    σ_v     = 1.0 / sqrt(lambda)
+
+    C       = 1e-9
+    g       = C / tau
+    s       = C * σ_v
+
+    V       = Ref(V_reset)
+    sqrt_dt = sqrt(dt)
+
+    function SLIF_neuron(u::Function, t::Float64)::Bool
+        dV   = (a + u(t) - V[] / tau) * dt + σ_v * sqrt_dt * randn()
+        V[] += dV
+        if V[] >= V_th
+            V[] = V[] - V_th
+            return true
         end
-
+        return false
     end
 
-    return SLIFneuron 
+    return SLIF_neuron, (a, σ_v, tau )
 end
 
 
@@ -1943,14 +1983,7 @@ function make_fractional_SLIF_neuron(
     x0::Float64=0.0; 
     dt::Float64=DEFAULT_SIMULATION_DT, f0::Float64=1e-2, f1::Float64=2e1)
 
-    # # Fractional Steinhausen model: I.y'' + P.y' + K.Dq y = I.wdot, 
-    # I = 2.0e-12   # coeff of q'', endolymph moment of inertia kg.m^2
-    # P = 6.0e-11   # coeff of q', viscous damping N.m.s/rad 
-    # G = 1.0e-10    # coeff of q, cupula stiffness N.m/rad 
-
-    # # Update equation coeffs from model parameters
-    # A = P/I
-    # B = G/I
+    #@infiltrate
 
     # Fractional SLIF neuron
         # extract OU parameters
@@ -1985,7 +2018,7 @@ function make_fractional_SLIF_neuron(
     du = zeros(length(x))
 
     Threshold = 1.0
-    Random.seed!(4242)
+   # Random.seed!(4242)
 
     # neuron update function given u(t) 
     function qSLIF(u::Function, t::Float64)
@@ -1995,7 +2028,7 @@ function make_fractional_SLIF_neuron(
      #   dx = (-x/tau + v0 + G*u(t))*dt + s * randn(1)[] * sqrt(dt) 
  
 
-        ut = v0 + G*u(t) + s*sqrt(tau*mu^3/lambda)*randn(1)[]/sqrt(dt)   # input at t
+        ut = v0 + G*u(t) + s*randn(1)[]/sqrt(dt)   # input at t
 
         vs = @view x[2:end]
 

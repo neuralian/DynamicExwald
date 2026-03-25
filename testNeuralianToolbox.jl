@@ -1861,18 +1861,20 @@ function ringmap_SLIF2Exwald(N::Int64=400)
 end
 
 
-# Fit Exwald model to SLIF neuron with no input. Cdv/dt = v0 -v*g + sigma*dw  
-# via interval distribution
-# SLIFparam = (v0, sigma, C, g)
-function demo_fit_Exwald2SLIF(SLIFparam::Tuple{Float64, Float64, Float64, Float64}, N::Int64=1000,
+# Fit Exwald model to ISI distribution of SLIF neuron spontaneous firing 
+# SLIF model is dV   = (a + u(t) - V[] / tau) * dt + σ_v * sqrt_dt * randn()
+# in the limit of large tau this is a drift-diffusion process with Inverse Gaussian ISI distn 
+# SLIFparam = (mu, lambda, tau) where (mu, lambda) are parameters of the limiting IG distn  
+function demo_fit_Exwald2SLIF(Param::Tuple{Float64, Float64, Float64}, N::Int64=1000,
       dt::Float64=DEFAULT_SIMULATION_DT)
 
-    # # fit Exwald model to SLIF model intervals
-    # EXWparam = fit_Exwald_to_SLIF(SLIFparam, N)
+    # get SLIF model update function and model parameters
+    SLIFneuron, SLIFparam = make_SLIF_neuron(Param...) 
 
-    # generate intervals using SLIF neuron
-    SLIFneuron = make_SLIF_neuron(SLIFparam) 
+    # simulate ISIs
     ISI = interspike_intervals(SLIFneuron, t->0.0, N) 
+
+    #ISI = quantize_intervals(ISI)  # 300us quantization (sample resolution for real data)
 
     # fit Exwald distribution to ISI Distribution
     fitted_EXWparam, goodness_of_fit = Fit_Exwald_to_ISI(ISI) 
@@ -1885,10 +1887,10 @@ function demo_fit_Exwald2SLIF(SLIFparam::Tuple{Float64, Float64, Float64, Float6
 
     #hist!(ISI, bins=128, normalization = :pdf)
 
-    SLIF_label = @sprintf "SLIF: μ = %.3f, λ = %.3f, τ = %.3f" SLIFparam[1] SLIFparam[2] SLIFparam[3]
-    stairs!(bin_centres, f_bin,color = :maroon, label = SLIF_label)
+    SLIF_label = @sprintf "SLIF: a = %.5f, σ_v = %.5f, τ = %.5f" SLIFparam[1] SLIFparam[2] SLIFparam[3]
+    stairs!(bin_centres.+bw/2, f_bin,color = :maroon, label = SLIF_label)
     grid = collect( 0.0:(bw/10.0):maximum(bin_edges) )
-    EXW_label = @sprintf "Exwald: μ = %.3f, λ = %.3f, τ = %.3f" fitted_EXWparam[1] fitted_EXWparam[2] fitted_EXWparam[3]
+    EXW_label = @sprintf "Exwald: μ = %.5f, λ = %.5f, τ = %.5f" fitted_EXWparam[1] fitted_EXWparam[2] fitted_EXWparam[3]
     lines!(grid, Exwaldpdf(fitted_EXWparam..., grid), linewidth=2, color = :blue, label = EXW_label)
 
     axislegend(ax, position = :rt)
@@ -1896,10 +1898,50 @@ function demo_fit_Exwald2SLIF(SLIFparam::Tuple{Float64, Float64, Float64, Float6
     display(F)
 
     # return fitted parameters and figure handle
-    #return fitted_EXWparam, F
-    return F
+    return fitted_EXWparam, F
 
 end
+
+
+# function demo_fit_Exwald2qSLIF(SLIFparam::Tuple{Float64, Float64, Float64}, q::Float64 = 0.0, N::Int64=1000,
+#       dt::Float64=DEFAULT_SIMULATION_DT)
+
+#     # # fit Exwald model to SLIF model intervals
+#     # EXWparam = fit_Exwald_to_SLIF(SLIFparam, N)
+
+#     # generate intervals using SLIF neuron
+
+# #@infiltrate
+#     SLIFneuron = make_fractional_SLIF_neuron(SLIFparam,q) 
+#     ISI = interspike_intervals(SLIFneuron, t->0.0, N) 
+
+#     ISI = quantize_intervals(ISI)  # 300us quantization (sample resolution for real data)
+
+#     # fit Exwald distribution to ISI Distribution
+#     fitted_EXWparam, goodness_of_fit = Fit_Exwald_to_ISI(ISI) 
+
+#     counts, f_bin, bin_edges, bin_centres = ISI_distribution(ISI,nbins = 64)
+#     bw = bin_edges[2] - bin_edges[1]
+
+#     F = Figure()
+#     ax = Axis(F[1,1], title = "Exwald model fitted to SLIF intervals")
+
+#     #hist!(ISI, bins=128, normalization = :pdf)
+
+#     SLIF_label = @sprintf "SLIF: μ = %.5f, λ = %.5f, τ = %.5f" SLIFparam[1] SLIFparam[2] SLIFparam[3]
+#     stairs!(bin_centres, f_bin,color = :maroon, label = SLIF_label)
+#     grid = collect( 0.0:(bw/10.0):maximum(bin_edges) )
+#     EXW_label = @sprintf "Exwald: μ = %.5f, λ = %.5f, τ = %.5f" fitted_EXWparam[1] fitted_EXWparam[2] fitted_EXWparam[3]
+#     lines!(grid, Exwaldpdf(fitted_EXWparam..., grid), linewidth=2, color = :blue, label = EXW_label)
+
+#     axislegend(ax, position = :rt)
+
+#     display(F)
+
+#     # return fitted parameters and figure handle
+#     return fitted_EXWparam, F
+
+# end
 
 # Show Exwald model fitted to SLIF neuron interval data
 # where SLIF neuron is specified by (interpolated) Exwald parameters

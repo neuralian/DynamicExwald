@@ -312,8 +312,8 @@ function Fit_Exwald_to_ISI(ISI::Vector{Float64},
         avg = mean(ISI)
         V = mean(ISI.^2) - avg^2  # data variance = E[x^2] - E[x]^2
         cv = sqrt(V)/avg
-        w = min(cv, 0.95)
-        τ = w*avg
+        w = min(cv, 0.95)^2
+        τ = avg*w
         μ = (1.0-w)*avg
         λ = μ/cv^2
         pInit = [μ, λ, τ]

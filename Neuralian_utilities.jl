@@ -1763,6 +1763,9 @@ end
 
 # ISI distribution
 # returns bin_count, relative_frequency, bin_edges and bin centres given ISIs 
+# can specify maxT and ( nbins or binwidth ) 
+# NB nbins over-rides binwidth if both are specified
+#    (i.e. that's an error but I'll let you off with a warning)
 function ISI_distribution(ISI::Vector{Float64}; 
                             maxT::Float64 = -1.0, nbins::Int64= -1, bw::Float64 = -1.0)
 
@@ -1799,4 +1802,14 @@ function ISI_distribution(ISI::Vector{Float64};
     # return counts, frequencies, bin edges and bin centres
     return H.weights, freqs, bin_edges, bin_centres
 
+end
+
+# simulate the effect of finite sample interval on observed spike times
+# Our data were obtained at 300us resolution
+function quantize_intervals(ISI::Vector{Float64}, samplePeriod::Float64=300.0e-6)
+
+    st = cumsum(ISI)                            # spike times from intervals
+    qst = ceil.(st/samplePeriod)*samplePeriod    # quantized spike times
+
+    return diff([0.0; qst])                     # return quantized intervals
 end
