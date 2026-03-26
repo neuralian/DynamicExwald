@@ -1072,21 +1072,19 @@ function dq(f::Vector{Float64}, q, dt::Float64=DEFAULT_SIMULATION_DT)
 
 end
 
-# returns closure to compute fractional derivative dq(f, t) = d^q f(t) / dt^q
-# using Oustaloop approximation in band (f0, f1) Hz 
-function make_fractional_derivative(f::Function, q::Float64, 
-         band::Tuple{Float64, Float64} = (.01, 4.0), dt::Float64=DEFAULT_SIMULATION_DT)
-
-
-    # convert frequency band from Hz to rad/s
-    wb = 2.0*band[1]
-    wh = 2.0*pi*band[2]
+# returns closure to compute fractional differintegrator d^q u(t) / dt^q
+# q > 0.0 for fractional differentiator, q < 0.0 for integrator 
+# Numerical approximation for input signal u_k with sample interval dt
+# using Oustaloop method in band (f0, f1) Hz (approximate the operator using linear transfer function) 
+# Default bandwidth is 1/minute to 1/10 of Nyquist Freq
+function make_fractional_derivative(q::Float64, f0::Float64=1.0/60.0, f1::Float64 = 0.1*π/DEFAULT_SIMULATION_DT,
+         dt::Float64=DEFAULT_SIMULATION_DT)
 
     # Approximation of order 2N+1 (so N=2 is 5th order)
-    N = 5
+    N = 4
     
-    # Compute Oustaloup parameters
-    K, poles, xeros = oustaloup_zeros_poles(q, N, wb, wh)
+    # Oustaloup transfer function parameters
+    K, poles, xeros = oustaloup_zeros_poles(q, N, 2π*f0, 2π*f1)
     
     # Compute residues and pole dynamics coefficients (the p_i = ω_k >0 for v' = -p_i v + y)
     residues, _ = oustaloup_residues(K, poles, xeros)
@@ -1098,25 +1096,25 @@ function make_fractional_derivative(f::Function, q::Float64,
     x = zeros(Float64,M)
     dx = zeros(Float64,M)
 
-    # fractional derivative
-    function dq(t::Float64)
+    # fractional update at t given u(t)
+    function dq(u::Float64)
 
         # Approximate D^q u 
         if (q==0.0) 
-            approx_dq = f(t)
+            D = u
         else
-            approx_dq = K * f(t)
+            D = K * u
             for i in 1:M
-                approx_dq += residues[i] * x[i]
+                D += residues[i] * x[i]
             end
         end
         
         # internal state update
         for i in 1:M
-            x[i] += (-p_i[i] * x[i] + f(t))*dt
+            x[i] += (-p_i[i] * x[i] + u)*dt
         end
 
-        return approx_dq
+        return D
     end
 
     # return closure
@@ -1207,6 +1205,41 @@ function CVStar_fromExwaldModel(mu::Float64, lambda::Float64, tau::Float64)
     cvStar = (cv/a)^(1.0/b)
 
 end
+
+
+# CV* given ISI
+function CVStar(ISI::Vector{Float64})
+
+    # Goldberg, Smith and Fernandez 1984 TABLE 1
+    # nb This table uses milliseconds but (our) model convention is seconds
+    tbar_tab = vec([5.0   5.5  6.0   6.5   7.0   7.5   12.5  17.5  22.5  27.5 32.5  37.5 42.5  47.5  52.5])
+    a_tab =    vec([0.36  0.4  0.46  0.53  0.55  0.56  0.84  1.15  1.49  1.66  1.68  1.8  1.82  1.88  1.93])
+    b_tab =    vec([0.63  0.66  0.73  0.79  0.8  0.81  0.97  1.02  1.04  1.01  0.96  0.93  0.91  0.9  0.89])
+
+    # mean interval length in ms 
+    tbar = mean(ISI)*1000.0
+
+    # CV for this neuron
+    CV =  std(ISI)/mean(ISI)
+
+    # interpolators (using BasicInterpolators.jl)
+    if (tbar<tbar_tab[1] || tbar>tbar_tab[end])  # model is out of bounds, use linear extrapolation
+        a_interpolate = LinearInterpolator(tbar_tab, a_tab, NoBoundaries())
+        b_interpolate = LinearInterpolator(tbar_tab, b_tab, NoBoundaries())
+    else
+        a_interpolate = CubicSplineInterpolator(tbar_tab, a_tab)
+        b_interpolate = CubicSplineInterpolator(tbar_tab, b_tab)
+    end
+
+    # interpolated coefficients 
+    a = a_interpolate(tbar)
+    b = b_interpolate(tbar)
+
+    return cvStar = (CV/a)^(1.0/b)
+
+end
+
+
 
 function Exwald_fromCV(CV::Float64)
 

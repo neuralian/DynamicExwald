@@ -1903,6 +1903,58 @@ function demo_fit_Exwald2SLIF(Param::Tuple{Float64, Float64, Float64}, N::Int64=
 end
 
 
+# Fit Exwald model to ISI distribution of fractional SLIF neuron spontaneous firing 
+# SLIF model is dV   = (a + u(t) - V[] / tau) * dt + σ_v * sqrt_dt * randn()
+# in the limit of large tau this is a drift-diffusion process with Inverse Gaussian ISI distn 
+# SLIFparam = (mu, lambda, tau) where (mu, lambda) are parameters of the limiting IG distn  
+function demo_fit_Exwald2qSLIF(Param::Tuple{Float64, Float64, Float64}, q::Float64=1.0, 
+        N::Int64=1000,
+        dt::Float64=DEFAULT_SIMULATION_DT)
+
+    # get SLIF model update function and model parameters
+    qSLIFneuron, qSLIFparam = make_qSLIF_neuron(Param..., q) 
+
+    # simulate ISIs
+    ISI = interspike_intervals(qSLIFneuron, t->0.0, N) 
+
+    meanISI = mean(ISI)
+    sdISI = std(ISI)
+    cvISI = sdISI/mean(ISI)
+    cvStar = CVStar(ISI)
+
+    #ISI = quantize_intervals(ISI)  # 300us quantization (sample resolution for real data)
+
+    # fit Exwald distribution to ISI Distribution
+    fitted_EXWparam, goodness_of_fit = Fit_Exwald_to_ISI(ISI) 
+
+    counts, f_bin, bin_edges, bin_centres = ISI_distribution(ISI,nbins = 64)
+    bw = bin_edges[2] - bin_edges[1]
+
+    F = Figure(size = (800, 800))
+    ax = Axis(F[1,1], title = "Exwald model fitted to qSLIF neuron spontaneous interval distribution")
+    maxf = maximum(f_bin)
+    ylims!(0.0, maxf*1.25)
+
+    #hist!(ISI, bins=128, normalization = :pdf)
+
+    SLIF_label = @sprintf "qSLIF: a = %.5f, σ_v = %.5f, τ = %.5f, q = %.2f" qSLIFparam[1] qSLIFparam[2] qSLIFparam[3] q
+    stairs!(bin_centres.+bw/2, f_bin,color = :maroon, label = SLIF_label)
+    grid = collect( 0.0:(bw/10.0):maximum(bin_edges) )
+    EXW_label = @sprintf "Exwald: μ = %.5f, λ = %.5f, τ = %.5f" fitted_EXWparam[1] fitted_EXWparam[2] fitted_EXWparam[3]
+    lines!(grid, Exwaldpdf(fitted_EXWparam..., grid), linewidth=2, color = :blue, label = EXW_label)
+    STATS_label = @sprintf "Mean:  %.5f, SD: %.5f, CV: %.5f, CV*: %.5f" meanISI sdISI cvISI cvStar
+    lines!(meanISI*[1.0, 1.0], [0.0, maxf/8.0], 
+            linewidth = 2.0, linestyle = :dot, color = :seagreen, label = STATS_label)
+
+    axislegend(ax, position = :rt)
+
+    display(F)
+
+    # return fitted parameters and figure handle
+    return fitted_EXWparam, F
+
+end
+
 # function demo_fit_Exwald2qSLIF(SLIFparam::Tuple{Float64, Float64, Float64}, q::Float64 = 0.0, N::Int64=1000,
 #       dt::Float64=DEFAULT_SIMULATION_DT)
 
@@ -2290,6 +2342,67 @@ function plot3D_fittedExwald_vs_SLIF(filename::String, sp::String)
     return hcat((xTau, xLambda, xMu)...), hcat((fsTau, fsSigma, fsMu)...)
 
 end
+
+
+# test fractional derivative operator
+function test_dq(q::Float64=0.0, f::Float64=1.0, dt::Float64 = DEFAULT_SIMULATION_DT)
+
+    # time
+    T = 100.0
+    t = collect(0.0:dt:T)
+
+    # fractional derivative operator d^q
+    # specified q, operator bandwidth in Hz, time step length
+    dq = make_fractional_derivative(q)
+
+    # input 
+    u = sin.(2π*f.*t)
+
+    # output
+    y = zeros(length(t))
+    
+    for i in 1:length(t)
+
+        y[i] = dq(u[i])
+
+    end
+
+    # pull out last  period (assuming steady state by then)
+    period = 1.0/f
+    iTail = Int64(round((T - period)/dt)):length(t)
+    u = u[iTail]
+    y = y[iTail]
+    t = collect(1:length(iTail))*dt
+
+    # Time of first peak in u and y 
+    maxu = maximum(u)
+    tpu = findfirst(u.==maxu)*dt
+    maxy = maximum(y)
+    tpy = findfirst(y.==maxy)*dt
+
+    # Gain and phase
+    Gain = maxy/maxu
+    Phase = 360.0*(tpy-tpu)/period
+
+    F = Figure(size=(1200, 600))
+    ax = Axis(F[1, 1])
+
+    # expected gain is  w^q, expected phase -90*q
+    Ghat = (2π*f)^q 
+    Phat = -90*q
+
+    ax.title = @sprintf "Frequency: %.2f, Gain: %.3f (%.3f), Phase: %.3f (%.3f)" f Gain Ghat Phase Phat
+
+    lines!(ax, t, u)
+    lines!(ax, t, y)
+
+    display(F)
+
+
+
+
+end
+
 
 
 

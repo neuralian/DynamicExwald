@@ -598,10 +598,12 @@ end
 # end
 
 
-# Returns closure that simulates 1 timestep (dt) of SLIF neuron
-#                 and returns true if the neuron fired, false otherwise.
+# Returns closure SLIF_neuron that simulates 1 timestep (dt) of SLIF neuron
+# SLIF_neuron returns true if the neuron fired, false otherwise.
 # Also returns the parameters (a, σ_v, tau) of the SLIF model
 #  dV   = (a + u(t) - V[] / tau) * dt + σ_v * sqrt_dt * randn()
+# Input Params (mu, lambda) are parameters of Inverse Gaussian ISI distribution in the limit of large tau
+#              tau is SLIF neuron membrane time constant (distinct from Exwald tau)
 # 25MARCH26
 function make_SLIF_neuron(
     mu::Float64,
@@ -635,6 +637,104 @@ function make_SLIF_neuron(
 
     return SLIF_neuron, (a, σ_v, tau )
 end
+
+# Returns closure qSLIF_neuron that simulates 1 timestep (dt) of fractional SLIF neuron
+# qSLIF_neuron returns true if the neuron fired, false otherwise.
+# Also returns the parameters (a, σ_v, tau, q) of the fractional SLIF model
+# NB recovers SLIF_neuron for q=1
+# Input Param::Tuple is (mu, lambda, tau) where (mu, lambda) are parameters of 
+#                       Inverse Gaussian ISI distribution in the limit of large tau
+#                       and tau is the SLIF neuron membrane time constant (distinct from Exwald tau).
+# Default fractional order integration bandwidth 0.01-20Hz
+# 25MARCH26
+function make_qSLIF_neuron(mu::Float64, lambda::Float64, tau::Float64, q::Float64=1.0; 
+    dt::Float64         = DEFAULT_SIMULATION_DT,
+    qOrder::Int              = 5,
+    omega_low::Float64  = 2π * 0.01,
+    omega_high::Float64 = 2π * 20.0
+)
+
+    # ── LIF parameters (same as before) ─────────────────────────────────────
+    V_reset = 0.0
+    V_th    = 1.0
+    θ       = V_th - V_reset
+    a       = θ / mu
+    σ_v     = 1.0 / sqrt(lambda)
+    C       = 1e-9
+    g       = C / tau
+    s       = C * σ_v
+    sqrt_dt = sqrt(dt)
+
+    dq = make_fractional_derivative(q)
+
+    # # ── Oustaloup approximation to s^(-q) over [omega_low, omega_high] ──────
+    # # Zeros eta_k, poles omega_k, k = 1..N
+    # # eta_k   = omega_low * (omega_high/omega_low)^((2k-1-q)/(2N))
+    # # omega_k = omega_low * (omega_high/omega_low)^((2k-1+q)/(2N))
+    # # Gain C_0 = omega_high^q * prod(omega_k)/prod(eta_k)
+
+    # ratio = omega_high / omega_low
+    # ks    = 1:qOrder
+
+    # eta_k   = [omega_low * ratio^((2k - 1 - q) / (2qOrder)) for k in ks]
+    # omega_k = [omega_low * ratio^((2k - 1 + q) / (2qOrder)) for k in ks]
+    # C_0     = omega_high^q * prod(omega_k) / prod(eta_k)
+
+    # # Each pole omega_k gives a first-order system:
+    # #   dz_k/dt = -omega_k * z_k + (omega_k - eta_k) * x(t)
+    # #   y(t)    = C_0 * sum_k z_k  +  C_0 * x(t)
+    # # where x(t) is the input and y(t) is the fractionally integrated output.
+    # # This is the standard Oustaloup partial-fraction state-space form.
+
+    # # gain correction: ideal fractional operator s^q has gain w^-q at frequency w 
+    # # Gain of transfer function at w is |tf(iw)| 
+    # # we pick a frequency f_c to calibrate the gain
+    # f_c = 20.0 # Hz
+    # w_c = 2π*f_c
+    # iw = im*w_c
+    # G = abs(C_0*prod(iw .+ eta_k)/ prod(iw .+ omega_k))  # TF gain at w_c
+    # Gain_correction = w_c^(q) / G    # correction factor 
+    # @infiltrate
+    # @printf "%.2f, %.2f" G Gain_correction
+
+    # ── Mutable closure state ────────────────────────────────────────────────
+    V  = Ref(V_reset)
+    z  = zeros(Float64, qOrder)      # Oustaloup filter states
+
+    function qSLIF_neuron(u::Function, t::Float64)::Bool
+
+        # Raw input: deterministic drive + noise (input-referred)
+        x = u(t) + σ_v * randn() / sqrt_dt   # [norm-V/s]; noise is input-referred
+
+        # # Update Oustaloup filter states (Euler)
+        # # dz_k = (-omega_k * z_k + (omega_k - eta_k) * x) * dt
+        # y = C_0 * x    # direct feedthrough term
+        # for k in 1:qOrder
+        #     dz     = (-omega_k[k] * z[k] + (omega_k[k] - eta_k[k]) * x) * dt
+        #     z[k]  += dz
+        #     y     += C_0 * z[k]
+        # end
+        # y = y*Gain_correction  # fractionally integrated input, calibrated at f_c Hz
+
+        # fractional differintegrator
+        y = dq(x)
+        
+        # LIF membrane update — leak is intrinsic, fractional input replaces
+        # the direct (a + u(t)) drive of the standard model
+        dV   = (a + y - V[] / tau) * dt
+        V[] += dV
+
+        if V[] >= V_th
+            V[] = V[] - V_th
+            return true
+        end
+        return false
+    end
+
+    return qSLIF_neuron, (a, σ_v, tau, q )
+end
+
+
 
 
 # closure hit = ddstep(t) takes a step in drift-diffusion process 
@@ -1978,97 +2078,97 @@ end
 
 end
 
-function make_fractional_SLIF_neuron(
-    SLIF_param::Tuple{Float64, Float64, Float64}, q::Float64, 
-    x0::Float64=0.0; 
-    dt::Float64=DEFAULT_SIMULATION_DT, f0::Float64=1e-2, f1::Float64=2e1)
+# function make_fractional_SLIF_neuron(
+#     SLIF_param::Tuple{Float64, Float64, Float64}, q::Float64, 
+#     x0::Float64=0.0; 
+#     dt::Float64=DEFAULT_SIMULATION_DT, f0::Float64=1e-2, f1::Float64=2e1)
 
-    #@infiltrate
+#     #@infiltrate
 
-    # Fractional SLIF neuron
-        # extract OU parameters
-    (mu, lambda, tau) = SLIF_param
+#     # Fractional SLIF neuron
+#         # extract OU parameters
+#     (mu, lambda, tau) = SLIF_param
 
-    # First passage time model parameters for τ = 0.0 (Inverse Gaussian/Wald model)
-    # with barrier height = 1.0
-    (v0, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda, "barrier", 1.0)
+#     # First passage time model parameters for τ = 0.0 (Inverse Gaussian/Wald model)
+#     # with barrier height = 1.0
+#     (v0, s, barrier) = FirstPassageTime_parameters_from_Wald(mu, lambda, "barrier", 1.0)
  
 
-    # input gain (how much the drift rate is affected by input)
-    G = 1.0
+#     # input gain (how much the drift rate is affected by input)
+#     G = 1.0
 
-    # convert frequency band from Hz to rad/s
-    wb = 2.0*pi*f0
-    wh = 2.0*pi*f1
+#     # convert frequency band from Hz to rad/s
+#     wb = 2.0*pi*f0
+#     wh = 2.0*pi*f1
 
-    # Approximation of order 2N+1 (so N=2 is 5th order)
-    N = 5
+#     # Approximation of order 2N+1 (so N=2 is 5th order)
+#     N = 5
     
-    # Compute Oustaloup parameters
-    K, poles, xeros = oustaloup_zeros_poles(q, N, wb, wh)
+#     # Compute Oustaloup parameters
+#     K, poles, xeros = oustaloup_zeros_poles(q, N, wb, wh)
     
-    # Compute residues and pole dynamics coefficients (the p_i = ω_k >0 for v' = -p_i v + y)
-    residues, _ = oustaloup_residues(K, poles, xeros)
-    p_i = poles  # p_i = ω_k for the dynamics v' = -p_i v + y
+#     # Compute residues and pole dynamics coefficients (the p_i = ω_k >0 for v' = -p_i v + y)
+#     residues, _ = oustaloup_residues(K, poles, xeros)
+#     p_i = poles  # p_i = ω_k for the dynamics v' = -p_i v + y
     
-    M = length(poles)  # ... = 2N+1
+#     M = length(poles)  # ... = 2N+1
 
-    # Augmented state: x = [y, v1, ..., vM]
-    x = [x0; zeros(M)]
-    du = zeros(length(x))
+#     # Augmented state: x = [y, v1, ..., vM]
+#     x = [x0; zeros(M)]
+#     du = zeros(length(x))
 
-    Threshold = 1.0
-   # Random.seed!(4242)
+#     Threshold = 1.0
+#    # Random.seed!(4242)
 
-    # neuron update function given u(t) 
-    function qSLIF(u::Function, t::Float64)
+#     # neuron update function given u(t) 
+#     function qSLIF(u::Function, t::Float64)
 
-     #   @infiltrate
+#      #   @infiltrate
 
-     #   dx = (-x/tau + v0 + G*u(t))*dt + s * randn(1)[] * sqrt(dt) 
+#      #   dx = (-x/tau + v0 + G*u(t))*dt + s * randn(1)[] * sqrt(dt) 
  
 
-        ut = v0 + G*u(t) + s*randn(1)[]/sqrt(dt)   # input at t
+#         ut = v0 + G*u(t) + s*randn(1)[]/sqrt(dt)   # input at t
 
-        vs = @view x[2:end]
+#         vs = @view x[2:end]
 
-       # @infiltrate
+#        # @infiltrate
         
-        # Approximate D^q u 
-        if (q==0.0) 
-            approx_dq = ut
-        else
-            approx_dq = K * ut
-            for i in 1:M
-                approx_dq += residues[i] * vs[i]
-            end
-        end
+#         # Approximate D^q u 
+#         if (q==0.0) 
+#             approx_dq = ut
+#         else
+#             approx_dq = K * ut
+#             for i in 1:M
+#                 approx_dq += residues[i] * vs[i]
+#             end
+#         end
         
-        # state update
-        du[1] =  approx_dq - x[1]/tau
+#         # state update
+#         du[1] =  approx_dq - x[1]/tau
         
-        # Auxiliary state update
-        for i in 1:M
-            du[1 + i] = -p_i[i] * vs[i] + ut
-        end
+#         # Auxiliary state update
+#         for i in 1:M
+#             du[1 + i] = -p_i[i] * vs[i] + ut
+#         end
 
-     #   @infiltrate
+#      #   @infiltrate
 
-        # Euler integration
-        for i in 1:length(x)
-            x[i] += du[i] * dt
-        end
+#         # Euler integration
+#         for i in 1:length(x)
+#             x[i] += du[i] * dt
+#         end
 
-        if x[1] >= Threshold      
-            x[1] -= Threshold 
-           # vs .= 0.0
-            return true
-        else
-            return false  
-        end
+#         if x[1] >= Threshold      
+#             x[1] -= Threshold 
+#            # vs .= 0.0
+#             return true
+#         else
+#             return false  
+#         end
     
-    end
+#     end
 
-    # return closure
-    return qSLIF 
-end
+#     # return closure
+#     return qSLIF 
+# end
