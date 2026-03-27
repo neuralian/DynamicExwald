@@ -131,8 +131,16 @@ end
 function sKLD(interval::Vector{Float64}, model::Function)
 
     N = length(interval)
-    return -sum(log2.([model(interval[i]) for i in 1:N]))/N + log2(N)
+    return -sum(log2.(model(interval)))/N + log2(N)
 end
+
+# # Kullback-Liebler divergence from ISI data to model
+# # see Paulin, Pullar and Hoffman (2024) Sec. 2.2.3
+# function sKLD(interval::Vector{Float64}, model::Function)
+
+#     N = length(interval)
+#     return -sum(log2.([model(interval[i]) for i in 1:N]))/N + log2(N)
+# end
 
 
 # Kullback-Leibler divergence from p(x) to q(x) 
@@ -230,7 +238,10 @@ function Exwaldpdf_byconvolution(mu::Float64, lambda::Float64, tau::Float64, t::
 end
 
 # Exwald pdf at t (From Schwarz (2002) DOI: 10.1081/STA-120017215)
-function Exwaldpdf(mu::Float64, lambda::Float64, tau::Float64, t::Float64)
+# turns out that for realistic neuron models Schwarz's formula entails cancellation 
+# of very large exponentials, causing intractable numerical error. 
+# So it's rubbish for this application. Code retained for historical interest.
+function Exwaldpdf_Schwarz(mu::Float64, lambda::Float64, tau::Float64, t::Float64)
 
     @assert t >= 0.0         "Exwald undefined for t < 0.0"
 
@@ -278,6 +289,94 @@ function Exwaldpdf(mu::Float64, lambda::Float64, tau::Float64, t::Float64)
     return f
 end
 
+# Quadrature is accurate, so this is the official (default) function for computing Exwald at t.
+function Exwaldpdf( mu::Float64, lambda::Float64, tau::Float64, t::Float64)
+    t <= 0.0 && return 0.0
+    ig(u)  = u > 0 ? sqrt(lambda/(2π*u^3)) * exp(-lambda*(u-mu)^2/(2*mu^2*u)) : 0.0
+    ex(s)  = s > 0 ? exp(-s/tau)/tau : 0.0
+    val, _ = quadgk(u -> ig(u) * ex(t - u), 1e-10, t, rtol=1e-8)
+    return val
+end
+
+# This is the simple way to compute Exwald at a set of points t-1, t_2, ..., t_n
+# But there is a better, faster way, below ...
+Exwaldpdf_vec( mu::Float64, lambda::Float64, tau::Float64, t::Vector{Float64}) = 
+    [Exwaldpdf( mu, lambda, tau, s) for s in t]
+
+
+
+
+#  Exwaldpdf for vector t, using Gauss-Legendre quadrature.
+# 
+#   Exwaldpdf(t) = ∫₀ᵗ IG(u; μ,λ) · Exp(t-u; τ) du   (defn).
+#
+#  map u = t·v (v ∈ [0,1]) then 
+#
+#     Exwaldpdf(t) = t · ∫₀¹ f_IG(t·v) · f_Exp(t·(1-v)) dv
+#
+# This has the same Gauss-Legendre nodes v_k ∈ [0,1] for every t,
+# so the vector of points can be evaluated in a single sweep.
+# Edited by MGP based on code by Claude Sonnet 4.6, 27 March 2026
+function Exwaldpdf(mu::Float64, lambda::Float64, tau::Float64, t::Vector{Float64}, 
+                    n_nodes::Int = 60 )
+
+    # Gauss-Legendre nodes and weights on [0,1]
+    nodes, weights = gausslegendre(n_nodes)
+    # nodes are on [-1,1], map to [0,1]
+    v_k = (nodes .+ 1.0) ./ 2.0
+    w_k = weights ./ 2.0           # Jacobian of [−1,1]→[0,1]
+
+    n   = length(t)
+    pdf = zeros(Float64, n)
+
+    # Precompute IG and Exp on the 2D grid (n_nodes × n_t) at once
+    # u_ik = t[i] * v_k  — matrix of quadrature points
+    # Each column is one t value, each row is one quadrature node
+
+    # t is (n,), v_k is (n_nodes,)
+    # U[k,i] = t[i] * v_k[k]
+    U = v_k * t'               # (n_nodes × n) matrix
+
+    # IG at u = U[k,i]
+    function ig(u)
+        u <= 0.0 && return 0.0
+        sqrt(lambda / (2π * u^3)) * exp(-lambda * (u - mu)^2 / (2 * mu^2 * u))
+    end
+
+    # Exp at s = t - u = t[i]*(1 - v_k[k])
+    S   = (1.0 .- v_k) * t'   # (n_nodes × n)
+
+    IG  = ig.(U)                # (n_nodes × n)  — broadcasted
+    EX  = exp.(-S ./ tau) ./ tau
+
+    # Integrand values at each node/sample pair
+    INTEG = IG .* EX            # (n_nodes × n)
+
+    # Quadrature: f(tᵢ) = tᵢ · Σₖ w_k · INTEG[k,i]
+    # (the tᵢ factor is the Jacobian of u = tᵢ·v)
+    f_t = t .* (w_k' * INTEG)' |> vec
+
+    return f_t
+end
+
+"""
+    exwald_loglikelihood(ts; mu, lambda, tau, n_nodes=50)
+
+Log-likelihood of observed ISIs ts under Exwald(mu, lambda, tau).
+Suitable for use with Optim.jl for parameter fitting.
+"""
+# function exwald_loglikelihood(
+#     ts::Vector{Float64};
+#     mu::Float64,
+#     lambda::Float64,
+#     tau::Float64,
+#     n_nodes::Int = 50
+# )
+#     pdfs = exwald_pdf_vec(ts; mu=mu, lambda=lambda, tau=tau, n_nodes=n_nodes)
+#     # Guard against log(0) from numerical issues
+#     return sum(log.(max.(pdfs, 1e-300)))
+# end
+
 # Exwald pdf parameterized by cv
 function Exwaldpdf_cv(mu::Float64, cv::Float64, tau::Float64, t::Float64)
 
@@ -294,25 +393,25 @@ end
 
 
 
-# Exwald pdf at vector of times
-# renormalized if renorm==true
-function Exwaldpdf(mu::Float64, lambda::Float64, tau::Float64, t::Vector{Float64}, renorm::Bool=false)
+# # Exwald pdf at vector of times
+# # renormalized if renorm==true
+# function Exwaldpdf(mu::Float64, lambda::Float64, tau::Float64, t::Vector{Float64}, renorm::Bool=true)
 
-    p = [Exwaldpdf(mu, lambda, tau, s) for s in t]
-    if renorm
-        p[findall(p.<0.0)] .=0.0  
-        p /= (sum(p)*(t[2] - t[1])) # normalize as density
-    end
+#     p = [Exwaldpdf(mu, lambda, tau, s) for s in t]
+#     if renorm
+#         p[findall(p.<0.0)] .=0.0  
+#         p /= (sum(p)*(t[2] - t[1])) # normalize as density
+#     end
 
-    return p
-end
+#     return p
+# end
 
-# Exwald pdf at vector of times
-function scaled_Exwaldpdf(mu::Float64, lambda::Float64, tau::Float64, t::Vector{Float64}, s::Float64)
+# # Exwald pdf at vector of times
+# function scaled_Exwaldpdf(mu::Float64, lambda::Float64, tau::Float64, t::Vector{Float64}, s::Float64)
 
-    [Exwaldpdf(mu, lambda, s * tau, q) for q in t]
+#     [Exwaldpdf(mu, lambda, s * tau, q) for q in t]
 
-end
+# end
 
 
 function lambertWNormal_sample(d::Float64= 0.1)

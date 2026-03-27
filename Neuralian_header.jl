@@ -3,7 +3,8 @@
 # MGP 2024-25
 
 using Distributions, GLMakie, ImageFiltering, 
-    WAV, Sound, PortAudio, SampledSignals, LinearAlgebra,
+    WAV, Sound, PortAudio, SampledSignals, LinearAlgebra, 
+    QuadGK, FastGaussQuadrature, Statistics,
     Printf, MLStyle, SpecialFunctions, Random, MAT, 
     BasicInterpolators, DSP, StatsBase, JLD2,
     Infiltrator, Revise, Colors, Format

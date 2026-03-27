@@ -1911,21 +1911,28 @@ function demo_fit_Exwald2qSLIF(Param::Tuple{Float64, Float64, Float64}, q::Float
         N::Int64=1000,
         dt::Float64=DEFAULT_SIMULATION_DT)
 
-    # get SLIF model update function and model parameters
-    qSLIFneuron, qSLIFparam = make_qSLIF_neuron(Param..., q) 
-
-    # simulate ISIs
-    ISI = interspike_intervals(qSLIFneuron, t->0.0, N) 
+    fitted_EXWparam, goodness_of_fit, ISI  = fit_Exwald_to_qSLIF(Param, q, N) 
 
     meanISI = mean(ISI)
     sdISI = std(ISI)
     cvISI = sdISI/mean(ISI)
     cvStar = CVStar(ISI)
 
-    #ISI = quantize_intervals(ISI)  # 300us quantization (sample resolution for real data)
+    # # get SLIF model update function and model parameters
+    # qSLIFneuron, qSLIFparam = make_qSLIF_neuron(Param..., q) 
 
-    # fit Exwald distribution to ISI Distribution
-    fitted_EXWparam, goodness_of_fit = Fit_Exwald_to_ISI(ISI) 
+    # # simulate ISIs
+    # ISI = interspike_intervals(qSLIFneuron, t->0.0, N) 
+
+    # meanISI = mean(ISI)
+    # sdISI = std(ISI)
+    # cvISI = sdISI/mean(ISI)
+    # cvStar = CVStar(ISI)
+
+    # #ISI = quantize_intervals(ISI)  # 300us quantization (sample resolution for real data)
+
+    # # fit Exwald distribution to ISI Distribution
+    # fitted_EXWparam, goodness_of_fit = Fit_Exwald_to_ISI(ISI) 
 
     counts, f_bin, bin_edges, bin_centres = ISI_distribution(ISI,nbins = 64)
     bw = bin_edges[2] - bin_edges[1]
@@ -1937,7 +1944,8 @@ function demo_fit_Exwald2qSLIF(Param::Tuple{Float64, Float64, Float64}, q::Float
 
     #hist!(ISI, bins=128, normalization = :pdf)
 
-    SLIF_label = @sprintf "qSLIF: a = %.5f, σ_v = %.5f, τ = %.5f, q = %.2f" qSLIFparam[1] qSLIFparam[2] qSLIFparam[3] q
+
+    SLIF_label = @sprintf "qSLIF: a = %.5f, σ_v = %.5f, τ = %.5f, q = %.2f" Param[1] Param[2] Param[3] q
     stairs!(bin_centres.+bw/2, f_bin,color = :maroon, label = SLIF_label)
     grid = collect( 0.0:(bw/10.0):maximum(bin_edges) )
     EXW_label = @sprintf "Exwald: μ = %.5f, λ = %.5f, τ = %.5f" fitted_EXWparam[1] fitted_EXWparam[2] fitted_EXWparam[3]
@@ -1950,8 +1958,10 @@ function demo_fit_Exwald2qSLIF(Param::Tuple{Float64, Float64, Float64}, q::Float
 
     display(F)
 
+    #@infiltrate
+
     # return fitted parameters and figure handle
-    return fitted_EXWparam, F
+    return fitted_EXWparam, goodness_of_fit, F
 
 end
 
