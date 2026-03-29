@@ -1868,7 +1868,7 @@ end
 function demo_fit_Exwald2SLIF(Param::Tuple{Float64, Float64, Float64}, N::Int64=1000,
       dt::Float64=DEFAULT_SIMULATION_DT)
 
-    # get SLIF model update function and model parameters
+    # get SLIF model update function and SLIF model coeffs
     SLIFneuron, SLIFparam = make_SLIF_neuron(Param...) 
 
     # simulate ISIs
@@ -1884,8 +1884,6 @@ function demo_fit_Exwald2SLIF(Param::Tuple{Float64, Float64, Float64}, N::Int64=
 
     F = Figure()
     ax = Axis(F[1,1], title = "Exwald model fitted to SLIF intervals")
-
-    #hist!(ISI, bins=128, normalization = :pdf)
 
     SLIF_label = @sprintf "SLIF: a = %.5f, σ_v = %.5f, τ = %.5f" SLIFparam[1] SLIFparam[2] SLIFparam[3]
     stairs!(bin_centres.+bw/2, f_bin,color = :maroon, label = SLIF_label)
@@ -1911,28 +1909,12 @@ function demo_fit_Exwald2qSLIF(Param::Tuple{Float64, Float64, Float64}, q::Float
         N::Int64=1000,
         dt::Float64=DEFAULT_SIMULATION_DT)
 
-    fitted_EXWparam, goodness_of_fit, ISI  = fit_Exwald_to_qSLIF(Param, q, N) 
+    fitted_EXWparam, goodness_of_fit, ISI, SLIFparam  = fit_Exwald_to_qSLIF(Param, q, N) 
 
     meanISI = mean(ISI)
     sdISI = std(ISI)
     cvISI = sdISI/mean(ISI)
     cvStar = CVStar(ISI)
-
-    # # get SLIF model update function and model parameters
-    # qSLIFneuron, qSLIFparam = make_qSLIF_neuron(Param..., q) 
-
-    # # simulate ISIs
-    # ISI = interspike_intervals(qSLIFneuron, t->0.0, N) 
-
-    # meanISI = mean(ISI)
-    # sdISI = std(ISI)
-    # cvISI = sdISI/mean(ISI)
-    # cvStar = CVStar(ISI)
-
-    # #ISI = quantize_intervals(ISI)  # 300us quantization (sample resolution for real data)
-
-    # # fit Exwald distribution to ISI Distribution
-    # fitted_EXWparam, goodness_of_fit = Fit_Exwald_to_ISI(ISI) 
 
     counts, f_bin, bin_edges, bin_centres = ISI_distribution(ISI,nbins = 64)
     bw = bin_edges[2] - bin_edges[1]
@@ -1942,10 +1924,7 @@ function demo_fit_Exwald2qSLIF(Param::Tuple{Float64, Float64, Float64}, q::Float
     maxf = maximum(f_bin)
     ylims!(0.0, maxf*1.25)
 
-    #hist!(ISI, bins=128, normalization = :pdf)
-
-
-    SLIF_label = @sprintf "qSLIF: a = %.5f, σ_v = %.5f, τ = %.5f, q = %.2f" Param[1] Param[2] Param[3] q
+    SLIF_label = @sprintf "qSLIF: a = %.5f, σ_v = %.5f, τ = %.5f, q = %.2f" SLIFparam[1] SLIFparam[2] SLIFparam[3] q
     stairs!(bin_centres.+bw/2, f_bin,color = :maroon, label = SLIF_label)
     grid = collect( 0.0:(bw/10.0):maximum(bin_edges) )
     EXW_label = @sprintf "Exwald: μ = %.5f, λ = %.5f, τ = %.5f" fitted_EXWparam[1] fitted_EXWparam[2] fitted_EXWparam[3]
@@ -1962,6 +1941,54 @@ function demo_fit_Exwald2qSLIF(Param::Tuple{Float64, Float64, Float64}, q::Float
 
     # return fitted parameters and figure handle
     return fitted_EXWparam, goodness_of_fit, F
+
+end
+
+
+# DEMO fit qSLIF neuron to Exwald model spontaneous ISI distribution 
+function demo_fit_qSLIF2Exwald(mu::Float64, lambda::Float64, tau::Float64, 
+        N::Int64=5000,
+        dt::Float64=DEFAULT_SIMULATION_DT)
+
+    # Fit qSLIF parameters to Exwald model
+    qSLIFparam, objective = fit_qSLIF2Exwald(mu, lambda, tau, N)
+
+    # construct this qSLIF neuron, unpack qSLIF coeffs
+    neuron, (a, sigma, tau_neuron, q) = make_qSLIF_neuron(qSLIFparam...)
+
+    # generate spontaneous ISIs from qSLIF model
+    ISI = interspike_intervals(neuron, t->0.0, N)
+
+    meanISI = mean(ISI)
+    sdISI = std(ISI)
+    cvISI = sdISI/mean(ISI)
+    cvStar = CVStar(ISI)
+
+    counts, f_bin, bin_edges, bin_centres = ISI_distribution(ISI,nbins = 64)
+    bw = bin_edges[2] - bin_edges[1]
+
+    F = Figure(size = (800, 800))
+    ax = Axis(F[1,1], title = "qSLIF neuron spontaneous interval distribution fitted to Exwald model")
+    maxf = maximum(f_bin)
+    ylims!(0.0, maxf*1.25)
+
+    SLIF_label = @sprintf "qSLIF: a = %.5f, σ_v = %.5f, τ = %.5f, q = %.2f" a sigma tau_neuron q
+    stairs!(bin_centres.+bw/2, f_bin,color = :maroon, label = SLIF_label)
+    grid = collect( 0.0:(bw/10.0):maximum(bin_edges) )
+    EXW_label = @sprintf "Exwald: μ = %.5f, λ = %.5f, τ = %.5f" mu lambda tau
+    lines!(grid, Exwaldpdf(mu, lambda, tau, grid), linewidth=2, color = :blue, label = EXW_label)
+    STATS_label = @sprintf "Mean:  %.5f, SD: %.5f, CV: %.5f, CV*: %.5f" meanISI sdISI cvISI cvStar
+    lines!(meanISI*[1.0, 1.0], [0.0, maxf/8.0], 
+            linewidth = 2.0, linestyle = :dot, color = :seagreen, label = STATS_label)
+
+    axislegend(ax, position = :rt)
+
+    display(F)
+
+    #@infiltrate
+
+    # return fitted parameters and figure handle
+    return qSLIFparam, objective, F
 
 end
 
