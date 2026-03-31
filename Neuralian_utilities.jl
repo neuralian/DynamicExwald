@@ -152,7 +152,7 @@ function qSLIF2Exwald_KLD(qSLIFparam::Vector{Float64}, Exwaldparam::Vector{Float
     println(qSLIFparam[1], ", ", qSLIFparam[2], ", ", qSLIFparam[3], ", ", qSLIFparam[4])
 
     # spiking neuron model
-    neuron, _ = make_qSLIF_neuron(qSLIFparam...)
+    neuron, _  = make_qSLIFc_neuron(qSLIFparam...)
 
     # probability of interval greated than .01 crititical point + 10τ is < 1 in 2 million 
     # (assuming tail is exponential τ)
@@ -184,7 +184,11 @@ function qSLIF2Exwald_KLD(qSLIFparam::Vector{Float64}, Exwaldparam::Vector{Float
     # this will call the vectorised fast Gauss-Legendre version of Exwald 
    # return -sum(log2.(Exwaldpdf(Exwaldparam..., ISI[1:N])))/N + log2(N)
 
-   return Jenson_Shannon_divergence(ISI, Exwaldparam)
+    kld_pq, kld_qp = KLD_Exwald2ISI(ISI, Exwaldparam, n_nodes = 60, floor = 1e-10)
+    return kld_pq
+
+  #  return sKLD(ISI, u->Exwaldpdf(Exwaldparam..., u))
+   #return KLD_Exwald2ISI(ISI, Exwaldparam, n_nodes = 60, floor = 1e-10)
 
 end
 
@@ -232,6 +236,45 @@ function Jenson_Shannon_divergence(intervals::Vector{Float64},
 
     # Clamp final result to [0, 1] as a safety net
     return clamp(jsd, 0.0, 1.0)
+end
+
+
+
+# 
+function KLD_Exwald2ISI(intervals::Vector{Float64}, 
+                  Exwaldparam::Vector{Float64};
+                  n_nodes::Int64 = 60, floor::Float64 = 1e-10)
+   
+    n      = length(intervals)
+    
+    q_vals = Exwaldpdf(Exwaldparam..., intervals, n_nodes)
+    
+    # Kernel Density estimate of ISI distribution with Silverman bandwidth
+    h      = 10.0 * std(intervals) * n^(-0.2) #1.06 * std(intervals) * n^(-0.2)
+    p_vals = [mean(exp.(-(t .- intervals).^2 ./ (2h^2))) / (h * sqrt(2π))
+              for t in intervals]
+
+    # Keep only points where both densities are above floor
+    # — discard tail points where numerics are unreliable
+    mask   = (p_vals .> floor) .& (q_vals .> floor)
+    p_vals = p_vals[mask]
+    q_vals = q_vals[mask]
+
+    if sum(mask) < 10
+        @warn "Too few reliable points in KLD evaluation — check parameters"
+        return 100.0, 100.0    # return maximum JSD as penalty
+    end
+
+    # Normalise to ensure they integrate to 1 over retained points
+    # (masking breaks normalisation slightly)
+    p_vals ./= sum(p_vals)
+    q_vals ./= sum(q_vals)
+
+    # -20 bits is effectively zero contribution
+    kld_pq  = -mean(clamp.(log2.(p_vals ./ q_vals), -20.0, 0.0))
+    kld_qp  = -mean(clamp.(log2.(q_vals ./ p_vals), -20.0, 0.0))
+
+    return kld_pq, kld_qp
 end
 
 # # Kullback-Liebler divergence from ISI data to model

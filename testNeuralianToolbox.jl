@@ -1905,6 +1905,55 @@ end
 # SLIF model is dV   = (a + u(t) - V[] / tau) * dt + σ_v * sqrt_dt * randn()
 # in the limit of large tau this is a drift-diffusion process with Inverse Gaussian ISI distn 
 # SLIFparam = (mu, lambda, tau) where (mu, lambda) are parameters of the limiting IG distn  
+function demo_fit_Exwald2qSLIFc(a::Float64, sigma_v::Float64, tau_v::Float64, q::Float64=1.0, 
+        N::Int64=1000,
+        dt::Float64=DEFAULT_SIMULATION_DT)
+
+    neuron, _ = make_qSLIFc_neuron(a, sigma_v, tau_v, q)
+
+    ISI = interspike_intervals(neuron, _->0.0, N)
+
+    EXWparam, goodness_of_fit = Fit_Exwald_to_ISI(ISI)
+
+    meanISI = mean(ISI)
+    sdISI = std(ISI)
+    cvISI = sdISI/mean(ISI)
+    cvStar = CVStar(ISI)
+
+    counts, f_bin, bin_edges, bin_centres = ISI_distribution(ISI,nbins = 64)
+    bw = bin_edges[2] - bin_edges[1]
+
+    F = Figure(size = (800, 800))
+    ax = Axis(F[1,1], title = "Exwald model fitted to qSLIF neuron spontaneous interval distribution")
+    maxf = maximum(f_bin)
+    ylims!(0.0, maxf*1.25)
+
+    SLIF_label = @sprintf "qSLIF: a = %.5f, σ_v = %.5f, τ = %.5f, q = %.2f" a sigma_v tau_v q
+    stairs!(bin_centres.+bw/2, f_bin,color = :maroon, label = SLIF_label)
+    grid = collect( 0.0:(bw/10.0):maximum(bin_edges) )
+    EXW_label = @sprintf "Exwald: μ = %.5f, λ = %.5f, τ = %.5f" EXWparam[1] EXWparam[2] EXWparam[3]
+    lines!(grid, Exwaldpdf(EXWparam..., grid), linewidth=2, color = :blue, label = EXW_label)
+    STATS_label = @sprintf "Mean:  %.5f, SD: %.5f, CV: %.5f, CV*: %.5f" meanISI sdISI cvISI cvStar
+    lines!(meanISI*[1.0, 1.0], [0.0, maxf/8.0], 
+            linewidth = 2.0, linestyle = :dot, color = :seagreen, label = STATS_label)
+
+    axislegend(ax, position = :rt)
+
+    display(F)
+
+    #@infiltrate
+
+    # return fitted parameters and figure handle
+    return EXWparam, goodness_of_fit, F
+
+end
+
+
+
+# Fit Exwald model to ISI distribution of fractional SLIF neuron spontaneous firing 
+# SLIF model is dV   = (a + u(t) - V[] / tau) * dt + σ_v * sqrt_dt * randn()
+# in the limit of large tau this is a drift-diffusion process with Inverse Gaussian ISI distn 
+# SLIFparam = (mu, lambda, tau) where (mu, lambda) are parameters of the limiting IG distn  
 function demo_fit_Exwald2qSLIF(Param::Tuple{Float64, Float64, Float64}, q::Float64=1.0, 
         N::Int64=1000,
         dt::Float64=DEFAULT_SIMULATION_DT)
@@ -1951,10 +2000,15 @@ function demo_fit_qSLIF2Exwald(mu::Float64, lambda::Float64, tau::Float64,
         dt::Float64=DEFAULT_SIMULATION_DT)
 
     # Fit qSLIF parameters to Exwald model
-    qSLIFparam, objective = fit_qSLIF2Exwald(mu, lambda, tau, N)
+    qSLIFparam, objective = fit_qSLIF_to_Exwald_v2(mu, lambda, tau, N= N)
+
+    @infiltrate
+
+    # unpack
+    (a, sigma, tau_memb, q) = qSLIFparam
 
     # construct this qSLIF neuron, unpack qSLIF coeffs
-    neuron, (a, sigma, tau_neuron, q) = make_qSLIF_neuron(qSLIFparam...)
+    neuron, _ = make_qSLIFc_neuron(qSLIFparam...)
 
     # generate spontaneous ISIs from qSLIF model
     ISI = interspike_intervals(neuron, t->0.0, N)
@@ -1972,15 +2026,17 @@ function demo_fit_qSLIF2Exwald(mu::Float64, lambda::Float64, tau::Float64,
     maxf = maximum(f_bin)
     ylims!(0.0, maxf*1.25)
 
-    SLIF_label = @sprintf "qSLIF: a = %.5f, σ_v = %.5f, τ = %.5f, q = %.2f" a sigma tau_neuron q
+    SLIF_label = @sprintf "qSLIF: a = %.5f, σ_v = %.5f, τ = %.5f, q = %.2f" a sigma tau_memb q
     stairs!(bin_centres.+bw/2, f_bin,color = :maroon, label = SLIF_label)
     grid = collect( 0.0:(bw/10.0):maximum(bin_edges) )
     EXW_label = @sprintf "Exwald: μ = %.5f, λ = %.5f, τ = %.5f" mu lambda tau
     lines!(grid, Exwaldpdf(mu, lambda, tau, grid), linewidth=2, color = :blue, label = EXW_label)
-    STATS_label = @sprintf "Mean:  %.5f, SD: %.5f, CV: %.5f, CV*: %.5f" meanISI sdISI cvISI cvStar
-    lines!(meanISI*[1.0, 1.0], [0.0, maxf/8.0], 
-            linewidth = 2.0, linestyle = :dot, color = :seagreen, label = STATS_label)
 
+    lines!((mu+tau)*[1.0, 1.0], [0.0, maxf/8.0], 
+            linewidth = 2.0, linestyle = :dot, color = :blue)
+    ISI_label = @sprintf "ISI Mean:  %.5f, SD: %.5f, CV: %.5f, CV*: %.5f" meanISI sdISI cvISI cvStar
+    lines!(meanISI*[1.0, 1.0], [0.0, maxf/8.0], 
+            linewidth = 2.0, linestyle = :dot, color = :maroon, label = ISI_label)
     axislegend(ax, position = :rt)
 
     display(F)

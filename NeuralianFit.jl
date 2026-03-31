@@ -370,19 +370,22 @@ end
 # e.g. call
 function fit_qSLIF2Exwald(mu::Float64, lambda::Float64, tau::Float64, N::Int64=5000)
     
-    pInit = [mu/2.0, lambda, 0.1, 0.0]
+    pInit = [100.0, .2, 0.01, .0]
   
-    LB = [1.0e-4, 1.0e-5, 0.001, 0.0]  # lower bounds 
-    UB = [0.1, 25.0, 1.0, 0.5 ]  
+    LB = [1.0e-4, 1.0e-5, 0.005, 0.0]  # lower bounds 
+    UB = [1000.0,    25.0,   0.05,  0.5 ]  
 
     grad = zeros(Float64, length(pInit))   # required input to fitting code but not used
 
     # Goodness of fit is Kullback-Leibler divergence 
     #   from qSLIF spontaneous ISI distribution to specified Exwald model
-    KL_divergence = (param, grad) -> qSLIF2Exwald_KLD(param,[mu, lambda, tau], N )
+    KL_divergence = (param, grad) -> begin
+        Random.seed!(42)
+        qSLIF2Exwald_KLD(param,[mu, lambda, tau], N )
+    end
     f = OptimizationFunction(KL_divergence)
     Prob = Optimization.OptimizationProblem(f, pInit, grad, lb=LB, ub = UB)
-    sol = solve(Prob, NLopt.LN_NELDERMEAD(), reltol = 1.0e-9)
+    sol = solve(Prob, NLopt.LN_SBPLX(), reltol = 1.0e-3, abstol = 1.0e-3, maxiters = 1000)
  
     return tuple(sol.u...) , sol.objective
 end

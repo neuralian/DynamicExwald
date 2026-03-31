@@ -638,6 +638,58 @@ function make_SLIF_neuron(
     return SLIF_neuron, (a, σ_v, tau )
 end
 
+# qSLIF neuron constructor using qSLIF model coeffs
+# Default fractional order integration bandwidth 0.01-20Hz
+# 25MARCH26
+function make_qSLIFc_neuron(a::Float64, sigma::Float64, tau_memb::Float64, q::Float64=1.0; 
+    dt::Float64         = DEFAULT_SIMULATION_DT,
+    qOrder::Int              = 5,
+    omega_low::Float64  = 2π * 0.01,
+    omega_high::Float64 = 2π * 20.0
+)
+
+    # ── LIF parameters (same as before) ─────────────────────────────────────
+    V_reset = 0.0
+    V_th    = 1.0
+    θ       = V_th - V_reset
+    # a       = θ / mu
+    # σ_v     = 1.0 / sqrt(lambda)
+    # C       = 1e-9
+    # g       = C / tau
+    # s       = C * σ_v
+    sqrt_dt = sqrt(dt)
+
+    dq = make_fractional_derivative(q)
+
+    # ── Mutable closure state ────────────────────────────────────────────────
+    V  = Ref(V_reset)
+    z  = zeros(Float64, qOrder)      # Oustaloup filter states
+
+    function qSLIF_neuron(u::Function, t::Float64)::Bool
+
+        # Raw input: deterministic drive + noise (input-referred)
+        x = u(t) + sigma * randn() / sqrt_dt   # [norm-V/s]; noise is input-referred
+
+        # fractional differintegrator
+        y = dq(x)
+        
+        # LIF membrane update — leak is intrinsic, fractional input replaces
+        # the direct (a + u(t)) drive of the standard model
+        dV   = (a + y - V[] / tau_memb) * dt
+        V[] += dV
+
+        if V[] >= V_th
+            V[] = V[] - V_th
+            return true
+        end
+        return false
+    end
+
+    return qSLIF_neuron, (a,sigma, tau_memb, q)
+end
+
+
+
 # Returns closure qSLIF_neuron that simulates 1 timestep (dt) of fractional SLIF neuron
 # qSLIF_neuron returns true if the neuron fired, false otherwise.
 # Also returns the parameters (a, σ_v, tau, q) of the fractional SLIF model
