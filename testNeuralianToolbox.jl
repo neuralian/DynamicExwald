@@ -1629,237 +1629,6 @@ function demo_Bayesian_infer_binary_state_from_spiketrain(T::Float64 = 1.0, dt::
 
 end
 
-# construct a map from fractional Ornstein-Uhlenbeck FPT (SLIF neuron)
-# parameter space to Exwald parameters over a grid of points
-# This is very slow, used to explore SLIF parameter space & identify
-# a region where ISI distributions of fractional SLIF models match
-# empirical ISI distributions of vestibular afferents  
-function map_SLIF2Exwald(N::Int64=8000)
- 
-    # default ..., 41))[1:40]
-    # 11))[1:10]
-    # 21))[1:20]   
-    # 13))[1:12]
-
-    # following grid search maps out the region of (v0, sigma, tau) 
-    # parameter space of the fractional SLIF model 
-    # corresponding to empirical Exwald ISI models
-    # (i.e. roughly identifies an Orstein-Uhlenbeck SDE model with 
-    #  fractional noise input, as a model of canal afferents)
-    v0 = collect(logrange(1.0, 50.0, 10))
-    N_v0 = length(v0)
-    sigma = [.004, .005, .006]  #collect(logrange(5.0e-4, 5.0e-2, 3)) #collect(logrange(1.0e-4, 1.0e4, 10)) #[1:6]    # from e2-e6
-    N_sigma = length(sigma)
-    taus = collect(logrange(1.0e-3, 1.0e1, 10)) #[1:10]
-    N_tau = length(taus)
-
-    colour = 0.01
-
-    F = Figure()
-    ax = Axis(F[1,1], xscale = log10, yscale = log10, 
-                xlabel = "LIF time constant τ",
-                ylabel = "Exwald τ",
-                xtickformat = "{:.4f}", ytickformat = "{:.5f}")
-   # ax.xticks = [.005, .01, .02, .05]
-  #  ax.title = @sprintf "LIF μ= %.4f" v0
-    xlims!(ax, .0005, .1)
-    ylims!(ax, .000001, 0.5)
-
-    # Save/return fitted Exwald parameters and goodness of fit
-    EXWparam = fill((NaN, NaN, NaN), (N_v0, N_sigma, N_tau))
-    KLD = zeros(N_v0, N_sigma, N_tau)
-
-    #@infiltrate
-
-   # for i in 1:N_mu
-    for i in 1:N_v0
-        for j in 1:N_sigma
-            pInit = (NaN, NaN, NaN)
-            for k in 1:N_tau
-                #v0 = 1.0/(1.0 - exp(-mu_0[i]/taus[k]))  # drift required for expected FPT = mu[i]
-                println(i, ", ", j, ", ", k)
-                EXWparam[i, j, k] = fit_Exwald_to_SLIF( (v0[i], sigma[j], taus[k]), taus[k],
-                                                         N, pInit) #, (0.0005, 0.1))
-                println(EXWparam[i, j, k])
-               # pInit = EXWparam[i, j, k]
-            end
-            lines!(taus, [EXWparam[i,j,n][3] for n in 1:N_tau])
-       
-        end
-        #labl = @sprintf "%.4f" sigma[j]
-           display(F)   
-
-
-    end
-
- #   axislegend(ax, position = :rt) # :lb means 'left bottom'
-   # display(F)
-   grid = (v0, sigma, taus)
-
-   # uncomment next line (& maybe pick a different file name) to auto-save 
-   # using JLD2
-   jldsave("OU2EXW_19Jan26D.jld2"; EXWparam, grid)
-   # DATA = load("filename") to recover
-
-    return    EXWparam, grid , F
-
-end
-
-
-# map points along a line in SLIF parameter space 
-# to Exwald parameters
-function linemap_SLIF2Exwald(N::Int64=400)
- 
-    # using map_SLIF2Exwald (above) identified a line in 
-    # (v0, sigma, tau_s) SLIF parameter space corresponding (roughly)
-    # to the 1st principle axis of Exwald models (PP&H figure 3).
-    # This line goes through a = (.00774, .005, 2.385) and b = (.464, .005, 50.0) 
-    # in SLIF space.  Sigma (noise amplitude) is constan so we drop to 2D. 
-    # The line has slope S = 0.634 in log-log axes, 
-    # i.e. in "real" parameter space there is a power law relatioship
-    # between v0 and tau_s:  v0 = 10^v00 * tau_s^S.
-    # The distance between endpoints is about L = 2 (log units).
-    # So a rough starting point, identified by a coarse grid search,
-    # is that the SLIF parameters are on a line of length L with slope S
-    # starting at a.
-    
-    # SLIF parameter line parameters
-    tau_0, v0_0 = (.005, 2.4) #(.003, 0.6) #(.00774, 2.385) 
-    L =  3.0
-    S =  0.67
-    sigma_s = 0.005
-    n_pts = 32
-
-    # get n points along this line
-    tau_s, v0 = points_along_lineLogLog(tau_0, v0_0, L, S, n_pts)
-
-    # F = Figure()
-    # ax = Axis(F[1,1], xscale = log10, yscale = log10, 
-    #             xlabel = "SLIF τ",
-    #             ylabel = "SLIF v0",
-    #             xtickformat = "{:.4f}", ytickformat = "{:.5f}")
-    # xlims!(ax, 1.0e-3, 1.0e1)
-    # ylims!(ax, 1.0e0, 1.0e2)
-
-    # Save/return fitted Exwald parameters and goodness of fit
-    EXWparam = fill((NaN, NaN, NaN), n_pts)
-    KLD = zeros(n_pts)
-
-    #@infiltrate
-
-    for i in 1:n_pts
-
-        EXWparam[i] = fit_Exwald_to_SLIF( (v0[i], sigma_s, tau_s[i]), 
-                    0.1, N) #, (0.0005, 0.1))
-        println(i, ", ", EXWparam[i])
-
-    end 
-
-    F = Figure()
-    ax1 = Axis(F[1,1], xscale = log10, yscale = log10, 
-                xlabel = "SLIF τ",
-                ylabel = "SLIF v0",
-                xtickformat = "{:.4f}", ytickformat = "{:.5f}")
-    xlims!(ax1, 1.0e-3, 1.0e1)
-    ylims!(ax1, 1.0e0, 5.0e2)
-    ax1.title = @sprintf("(%.4f, %.4f), L = %.1f, S = %.2f, sigma = %.4f",
-                tau_0, v0_0, L, S, sigma_s)
-
-    scatter!(ax1, tau_s, v0)
-
-     ax2 = Axis(F[1,2], xscale = log10, yscale = log10, 
-                xlabel = "Exwald τ",
-                ylabel = "Exwald λ",
-                xtickformat = "{:.4f}", ytickformat = "{:.5f}")
-     xlims!(ax2, 1.0e-5, 1.0e-1)
-     ylims!(ax2, 1.0e-2, 1.0e2)   
-
-  scatter!(ax2, [EXWparam[i][3] for i in 1:n_pts], 
-                [EXWparam[i][2] for i in 1:n_pts])
-
-
-    display(F)   
-
-   # uncomment next line (& maybe pick a different file name) to auto-save 
-   # using JLD2
-   #jldsave("OU2EXW_line_19Jan26D.jld2"; EXWparam, grid)
-   # DATA = load("filename") to recover
-
-    return    EXWparam, tau_s, v0, F, ax1, ax2
-
-end
-
-
-# map points on a circle around a point in SLIF parameter space 
-# to Exwald parameters. Changed units from s to ms.
-function ringmap_SLIF2Exwald(N::Int64=400)
- 
-    
-    # SLIF tau-v0 parameter centre point (ms)
-    tau_0, v0_0 = (25.0, 3000.0) 
-
-    # SLIF current noise amplitude 
-    sigma_s = 0.005
-
-    # (log) radius of circle in SLIF parameter space
-    R = .1
-
-    # points on circle
-    nn = 4
-    tau_s, v0 = log_circle(x_c, y_c, R, nn)
-
-    # Save/return fitted Exwald parameters and goodness of fit
-    EXWparam = fill((NaN, NaN, NaN), nn+1)
-    KLD = zeros(nn)
-
-
-
-    # fit centre point
-    EXWparam[1] = fit_Exwald_to_SLIF( (v0_0, sigma_s, tau_0), 0.1, N)
-    println(1, ", ", EXWparam[1])
-
-    for i in 2:(nn+1)
-   # @infiltrate
-     println(i, v0[i-1], tau_s[i-1])
-        EXWparam[i] = fit_Exwald_to_SLIF( (v0[i-1], sigma_s, tau_s[i-1]), 0.1, N) 
-        println(i, ", ", EXWparam[i])
-
-    end 
-
-    F = Figure()
-    ax1 = Axis(F[1,1], xscale = log10, yscale = log10, 
-                xlabel = "SLIF τ",
-                ylabel = "SLIF v0",
-                xtickformat = "{:.4f}", ytickformat = "{:.5f}")
-    xlims!(ax1, 1.0e-3, 1.0e1)
-    ylims!(ax1, 1.0e0, 5.0e2)
-    ax1.title = @sprintf("(%.4f, %.4f), L = %.1f, S = %.2f, sigma = %.4f",
-                tau_0, v0_0, L, S, sigma_s)
-
-    scatter!(ax1, tau_s, v0)
-
-     ax2 = Axis(F[1,2], xscale = log10, yscale = log10, 
-                xlabel = "Exwald τ",
-                ylabel = "Exwald λ",
-                xtickformat = "{:.4f}", ytickformat = "{:.5f}")
-     xlims!(ax2, 1.0e-5, 1.0e-1)
-     ylims!(ax2, 1.0e-2, 1.0e2)   
-
-  scatter!(ax2, [EXWparam[i][3] for i in 1:n_pts], 
-                [EXWparam[i][2] for i in 1:n_pts])
-
-
-    display(F)   
-
-   # uncomment next line (& maybe pick a different file name) to auto-save 
-   # using JLD2
-   #jldsave("OU2EXW_line_19Jan26D.jld2"; EXWparam, grid)
-   # DATA = load("filename") to recover
-
-    return    EXWparam, tau_s, v0, F, ax1, ax2
-
-end
-
 
 # Fit Exwald model to ISI distribution of SLIF neuron spontaneous firing 
 # SLIF model is dV   = (a + u(t) - V[] / tau) * dt + σ_v * sqrt_dt * randn()
@@ -1901,54 +1670,110 @@ function demo_fit_Exwald2SLIF(Param::Tuple{Float64, Float64, Float64}, N::Int64=
 end
 
 
-# Fit Exwald model to ISI distribution of fractional SLIF neuron spontaneous firing 
-# SLIF model is dV   = (a + u(t) - V[] / tau) * dt + σ_v * sqrt_dt * randn()
-# in the limit of large tau this is a drift-diffusion process with Inverse Gaussian ISI distn 
-# SLIFparam = (mu, lambda, tau) where (mu, lambda) are parameters of the limiting IG distn  
-function demo_fit_Exwald2qSLIFc(a::Float64, sigma_v::Float64, tau_v::Float64, q::Float64=1.0, 
-        N::Int64=1000,
+# Overlay plot of spiking neuron model and theoretical spontaneous ISI distribution
+# usage: see compare_Wald_neuron_ISI_to_Wald_pdf()
+function compare_ISI_to_pdf(neuron::Function, pdf::Function, 
+        N::Int64=1000, timeout::Float64 = 1.0, 
         dt::Float64=DEFAULT_SIMULATION_DT)
 
-    neuron, _ = make_qSLIFc_neuron(a, sigma_v, tau_v, q)
+    ISI = interspike_intervals(neuron, _->0.0, N, timeout)
 
-    ISI = interspike_intervals(neuron, _->0.0, N)
-
-    EXWparam, goodness_of_fit = Fit_Exwald_to_ISI(ISI)
-
-    meanISI = mean(ISI)
-    sdISI = std(ISI)
-    cvISI = sdISI/mean(ISI)
-    cvStar = CVStar(ISI)
-
+    # ISI histogram
     counts, f_bin, bin_edges, bin_centres = ISI_distribution(ISI,nbins = 64)
     bw = bin_edges[2] - bin_edges[1]
 
+    # ISI stats
+    meanISI = mean(ISI)
+    sdISI = std(ISI)
+    cvISI = sdISI/mean(ISI)
+    cvStarISI = CVStar(ISI)
+
+    # pdf model
+    grid = collect( 0.0:(bw/10.0):(maximum(bin_edges)*1.25 ) )
+    pdf_vec = [ pdf(t) for t in grid]
+    meanPdf, sdPdf, cvPdf, cvstarPdf = pdf_stats(grid, pdf_vec)
+
     F = Figure(size = (800, 800))
-    ax = Axis(F[1,1], title = "Exwald model fitted to qSLIF neuron spontaneous interval distribution")
+    ax = Axis(F[1,1])
     maxf = maximum(f_bin)
     ylims!(0.0, maxf*1.25)
 
-    SLIF_label = @sprintf "qSLIF: a = %.5f, σ_v = %.5f, τ = %.5f, q = %.2f" a sigma_v tau_v q
-    stairs!(bin_centres.+bw/2, f_bin,color = :maroon, label = SLIF_label)
-    grid = collect( 0.0:(bw/10.0):maximum(bin_edges) )
-    EXW_label = @sprintf "Exwald: μ = %.5f, λ = %.5f, τ = %.5f" EXWparam[1] EXWparam[2] EXWparam[3]
-    lines!(grid, Exwaldpdf(EXWparam..., grid), linewidth=2, color = :blue, label = EXW_label)
-    STATS_label = @sprintf "Mean:  %.5f, SD: %.5f, CV: %.5f, CV*: %.5f" meanISI sdISI cvISI cvStar
+    # draw ISI histogram and pdf with dummy labels 
+    # Labels will be completed by the caller, who knows the model parameters
+    stairs!(bin_centres.+bw/2, f_bin,color = :maroon, label = "ISI")
+    lines!(grid, pdf_vec, linewidth=2, color = :blue, label = "PDF")
+ 
+    ISI_stats_label = @sprintf "ISI,  Mean:  %.5f, SD: %.5f, CV: %.5f, CV*: %.5f" meanISI sdISI cvISI cvStarISI    
     lines!(meanISI*[1.0, 1.0], [0.0, maxf/8.0], 
-            linewidth = 2.0, linestyle = :dot, color = :seagreen, label = STATS_label)
+            linewidth = 2.0, linestyle = :dot, color = :maroon, label = ISI_stats_label)
 
+    PDF_stats_label = @sprintf "PDF, Mean:  %.5f, SD: %.5f, CV: %.5f, CV*: %.5f" meanPdf sdPdf cvPdf cvstarPdf  
+    lines!(meanPdf*[1.0, 1.0], [0.0, maxf/8.0], 
+            linewidth = 2.0, linestyle = :dot, color = :blue, label = PDF_stats_label)
+    
     axislegend(ax, position = :rt)
 
     display(F)
 
-    #@infiltrate
+    # return figure handle
+    return  F
 
-    # return fitted parameters and figure handle
-    return EXWparam, goodness_of_fit, F
+end
+
+# overlay plot of wald neuron ISI distribution and Wald pdf (theoretical ISI distribution)
+# use this as a template for other neurons 
+function compare_Wald_neuron_ISI_to_Wald_pdf(mu::Float64, lambda::Float64, N::Int64=1000)
+
+    w_neuron, _ = make_Wald_neuron(mu, lambda, dt)
+    wald_pdf = t->pdf(InverseGaussian(mu, lambda), t)
+
+    # last parameter is timeout (usually simpler than this but Wald has wide range of shapes)
+    F = compare_ISI_to_pdf(w_neuron, wald_pdf, N, mu+sqrt(1.0/lambda))
+
+    ax = F.content[1]
+    ax.title = "Wald neuron spontaneous ISI distribution and Wald PDF" 
+
+    # In this example the neuron and the pdf have the same parameters 
+    # but that is not true in general (e.g. qSLIF neuron vs. Exwald pdf)
+    ax.scene.plots[1].label[] = @sprintf "Neuron mu = %.4f, lambda = %.4f" mu lambda 
+    ax.scene.plots[2].label[] = @sprintf "PDF      mu = %.4f, lambda = %.4f" mu lambda 
+
+    # update legend and redraw
+    delete!(F.content[end])   # last entry is label (fingers crossed)
+    axislegend(ax, position=:rt)
+    display(F)
+
+    return F
 
 end
 
 
+# overlay plot of Poisson neuron ISI distribution and Exponential pdf (theoretical ISI distribution)
+function compare_Poisson_neuron_ISI_to_Exponential_pdf(tau::Float64, N::Int64=1000)
+
+    p_neuron, _ = make_Poisson_neuron(tau)
+
+    Exponential_pdf = t->pdf(Exponential(tau), t)
+
+    # last parameter is timeout (p<1e-6)
+    F = compare_ISI_to_pdf(p_neuron, Exponential_pdf, N, 14.0*tau)
+
+    ax = F.content[1]
+    ax.title = "Poisson neuron spontaneous ISI distribution and Exponential PDF" 
+
+    # In this example the neuron and the pdf have the same parameters 
+    # but that is not true in general (e.g. qSLIF neuron vs. Exwald pdf)
+    ax.scene.plots[1].label[] = @sprintf "Neuron tau = %.4f" tau
+    ax.scene.plots[2].label[] = @sprintf "PDF      tau = %.4f" tau
+
+    # update legend and redraw
+    delete!(F.content[end])   # last entry is label (fingers crossed)
+    axislegend(ax, position=:rt)
+    display(F)
+
+    return F
+
+end
 
 # Fit Exwald model to ISI distribution of fractional SLIF neuron spontaneous firing 
 # SLIF model is dV   = (a + u(t) - V[] / tau) * dt + σ_v * sqrt_dt * randn()
@@ -2048,60 +1873,6 @@ function demo_fit_qSLIF2Exwald(mu::Float64, lambda::Float64, tau::Float64,
 
 end
 
-# function demo_fit_Exwald2qSLIF(SLIFparam::Tuple{Float64, Float64, Float64}, q::Float64 = 0.0, N::Int64=1000,
-#       dt::Float64=DEFAULT_SIMULATION_DT)
-
-#     # # fit Exwald model to SLIF model intervals
-#     # EXWparam = fit_Exwald_to_SLIF(SLIFparam, N)
-
-#     # generate intervals using SLIF neuron
-
-# #@infiltrate
-#     SLIFneuron = make_fractional_SLIF_neuron(SLIFparam,q) 
-#     ISI = interspike_intervals(SLIFneuron, t->0.0, N) 
-
-#     ISI = quantize_intervals(ISI)  # 300us quantization (sample resolution for real data)
-
-#     # fit Exwald distribution to ISI Distribution
-#     fitted_EXWparam, goodness_of_fit = Fit_Exwald_to_ISI(ISI) 
-
-#     counts, f_bin, bin_edges, bin_centres = ISI_distribution(ISI,nbins = 64)
-#     bw = bin_edges[2] - bin_edges[1]
-
-#     F = Figure()
-#     ax = Axis(F[1,1], title = "Exwald model fitted to SLIF intervals")
-
-#     #hist!(ISI, bins=128, normalization = :pdf)
-
-#     SLIF_label = @sprintf "SLIF: μ = %.5f, λ = %.5f, τ = %.5f" SLIFparam[1] SLIFparam[2] SLIFparam[3]
-#     stairs!(bin_centres, f_bin,color = :maroon, label = SLIF_label)
-#     grid = collect( 0.0:(bw/10.0):maximum(bin_edges) )
-#     EXW_label = @sprintf "Exwald: μ = %.5f, λ = %.5f, τ = %.5f" fitted_EXWparam[1] fitted_EXWparam[2] fitted_EXWparam[3]
-#     lines!(grid, Exwaldpdf(fitted_EXWparam..., grid), linewidth=2, color = :blue, label = EXW_label)
-
-#     axislegend(ax, position = :rt)
-
-#     display(F)
-
-#     # return fitted parameters and figure handle
-#     return fitted_EXWparam, F
-
-# end
-
-# Show Exwald model fitted to SLIF neuron interval data
-# where SLIF neuron is specified by (interpolated) Exwald parameters
-# e.g. irregular: demo_fit_Exwald2SLIF_viaEXWparam((.01, 0.1, .05), 10000)
-#        regular: demo_fit_Exwald2SLIF_viaEXWparam((.013, 10., .0005), 10000) 
-# function demo_fit_Exwald2SLIF_viaEXWparam(EXWparam::Tuple{Float64, Float64, Float64},
-#                         N::Int64=1000, dt::Float64=DEFAULT_SIMULATION_DT)
-
-#     SLIFparam = Exwald2SLIF(EXWparam)
-#     newEXWparam = demo_fit_Exwald2SLIF(SLIFparam, N, dt)
-
-#     return SLIFparam, newEXWparam
-
-# end
-
 # plot cv vs efficiency (bits/watt) and channel capacity (bits/second)
 # for Exwald neurons
 function show_efficiency_vs_channelcapacity()
@@ -2132,137 +1903,6 @@ function show_efficiency_vs_channelcapacity()
     display(F)
 
     return F  # bits_spike, bits_second, ATP_second
-
-end
-
-# OU tau as function of Exwald tau and lambda for given Exwald mu 
-# res = map resolution
-function plot_SLIF_tau_given_Exwald_tau_lambda(mu::Float64, res::Int64)
-
-    # load OU2EXW map
-    DATA=load("OU2EXW_40x40x40_4000_1.jld2");
-    EXWparam = DATA["EXWparam"]
-    grid = DATA["vex"]
-
-    # τ and λ ranges from PP&H paper 
-    tau = collect(logrange(.00001, .1, length = res))
-    M = length(tau)
-    lambda = collect(logrange(.01, 100.0, length = res)) 
-    N = length(lambda)
-
-    OUtau = zeros(M,N)
-    println("")
-    for i in 1:M 
-        for j in 1:N 
-            OUtau[i,j] = Exwald2SLIF((mu,lambda[j], tau[i] ),
-                        grid,
-                        EXWparam)[3]
-        end
-        print(i," ")
-    end
-    println("")
-
-    F = Figure()
-    ax = Axis(F[1,1], xscale = log10, yscale = log10,
-     xtickformat = "{:.4f}", ytickformat = "{:.5f}")
-    heatmap!(tau, lambda, OUtau, colorrange = (.005, .025))
-
-    display(F)
-
-    return OUtau, tau, lambda
-
-end
-
-
-# OU tau as function of Exwald parameters mu, lambda, tau
-# res = map resolution
-function plot_SLIF_tau_vs_Exwald_params(res::Int64)
-
-    # load OU2EXW map
-    DATA=load("OU2EXW_40x40x40_4000_1.jld2");
-    EXWparam = DATA["EXWparam"]
-    grid = DATA["vex"]
-
-    # μ, τ and λ ranges from PP&H paper 
-    mu = collect(logrange(.001, .1, length = res))
-    M = length(mu)
-    lambda = collect(logrange(.01, 100.0, length = res)) 
-    L = length(lambda)
-    tau = collect(logrange(.00001, .1, length = res))
-    T = length(tau)
-
-    OUtau = NaN*zeros(M,L,T)
-    println("")
-    for i in 1:M 
-        for j in 1:L
-            for k in 1:T
-                OUtau[i,j, k] = Exwald2SLIF((mu[i],lambda[j], tau[k] ),
-                        grid,
-                        EXWparam)[3]
-            end
-            print("(", i,",", j, "), ")
-        end
-        println("")
-    end
-
-    # F = Figure()
-    # ax = Axis(F[1,1], xscale = log10, yscale = log10,
-    #  xtickformat = "{:.4f}", ytickformat = "{:.5f}")
-    # heatmap!(tau, lambda, OUtau, colorrange = (.005, .025))
-
-    # display(F)
-
-    return OUtau, mu, lambda, tau
-
-end
-
-
-# Compare ISI distribution of SLIF neuron
-# with Exwald distribution used to specify its parameters 
-function demo_SLIFfromExwald(EXWparam::Tuple{Float64, Float64, Float64},
-            N::Int64)
-
-    # load OU2EXW map
-    DATA=load("OU2EXW_40x40x40_4000_1.jld2");
-    EXWmap = DATA["EXWparam"]
-    grid = DATA["vex"]
-
-        
-    # transform Exwald parameters to SLIF parameters
-    OUparam = Exwald2SLIF(EXWparam, grid, EXWmap)
-
-    fittedEXWparam, ob = fit_Exwald_to_OU(OUparam, N)
-
-    # construct SLIF neuron
-    SLIFneuron = make_OU_neuron(OUparam)[1]
-
-    # N spontaneous intervals
-    ISI = interspike_intervals(SLIFneuron, t->0.0, N)
-
-   # @infiltrate
-
-    # frequency histogram
-    T = 1.25*maximum(ISI)  # longest interval 
-    bw = T/128; #max(Int(round(N/500)), 32)   # at least 32 bins
-    bin_edges = 0.0:bw:T
-    t = collect(0.0:(bw/10):T)
-    H = fit(Histogram, ISI, bin_edges) 
-
-    # relative frequency histogram 
-    f_bin = H.weights./(sum(H.weights)*bw)
-    bin_centres = collect((bin_edges[2:end] + bin_edges[1:(end-1)])*0.5)
-
-    F = Figure()
-    ax = Axis(F[1,1])
-
-    stairs!(bin_centres, f_bin)
-    grid = collect( 0.0:bw/10.0:T )
-    lines!(grid, Exwaldpdf(EXWparam..., grid), linewidth=2)
-    lines!(grid, Exwaldpdf(fittedEXWparam..., grid), linewidth=2)
-
-    display(F)
-
-    return OUparam, fittedEXWparam, F
 
 end
 
@@ -2309,133 +1949,6 @@ function map_channelCapacity_PowerConsumption_Exwald(mu::Float64)
     return S, C, P, tau, lambda, F
 
 end
-
-# 3D plot of SLIF parameter as function of 
-# fitted Exwald parameters, generated by map_SLIF2Exwald()
-# sp is SLIF parameter (to be represented by color at plotted points)
-#    valid values are "mu", "lambda" and "tau"
-function plot3D_fittedExwald_vs_SLIF(filename::String, sp::String)
-
-    D = load(filename)
-
-    # EXWparam is 3D array 
-    # whose entries are tuples of Exwald parameters
-    # fitted to SLIF neuron ISI data.
-    EXWparam = D["EXWparam"]
-
-    # vex specifies points where there was an attempt
-    # to fit an Exwald model to SLIF neuron data.
-    # This fails at most points in the grid, where the 
-    # corresponding entry in EXWparam is (NaN, NaN, NaN) 
-    vex = D["grid"]
-    sMu = vex[1]      # SLIF mu
-    Nm = length(sMu)
-    sSigma = vex[2]  # SLIF lambda
-    Nl = length(sSigma)
-    sTau = vex[3]     # SLIF tau
-    Nt = length(sTau)
-
-   # DKL = D["V"]
-
-    # index of SLIF parameter to encode in point color
-    w = findfirst(==(sp), ("mu", "sigma", "tau") )
-
-    # find points in Exwald parameter space
-    # where an Exwald model was fitted to a SLIF model 
-    xMu = []
-    xLambda = []
-    xTau = []
-
-    # filtered SLIF parameters
-    fsMu = []
-    fsSigma = []
-    fsTau = []
-
-    # S = []      # for SLIF parameters
-    pointColor = []
-    cc = 0
-    for i in 1:Nm
-        for j in 1:Nl
-            for k in 1:Nt
-                
-                cc += 1
-
-                if !isnan(EXWparam[i,j,k][1])
-
-                    # if sTau[k]>.005 && sTau[k]<.04 &&
-                    #    sMu[i]<.01 && sMu[i]>.008 && sSigma[j]<5. &&
-                    #     (EXWparam[i,j,k][1]+EXWparam[i,j,k][3]) > .01 &&
-                    #      (EXWparam[i,j,k][1]+EXWparam[i,j,k][3]) < .1
-
-                    push!(xMu, EXWparam[i,j,k][1])
-                    push!(xLambda, EXWparam[i,j,k][2])                    
-                    push!(xTau, EXWparam[i,j,k][3]) 
-
-                    push!(fsMu, sMu[i])
-                    push!(fsSigma, sSigma[j])
-                    push!(fsTau, sTau[k])
-
-                    #S, _, _ = Exwald_entropy(EXWparam[i,j,k])
-                    push!(pointColor, [sMu[i], sSigma[j], sTau[k]][w])
-                    
-                    push!(pointColor, [sMu[i], sSigma[j], sTau[k]][w])
-                    #push!(pointColor, DKL[i,j,k])
-                    # push!(pointColor, sTau[k])
-
-                    # end
-                end
-            end
-        end
-    end
-
-       
-    # Create figure
-    F = Figure(size=(1200, 600))
-    axX = Axis3(F[1, 1],
-               xlabel="TAU",
-               ylabel="LAMBDA",
-               zlabel="MU")
-     xlims!(axX, (-5,-1))
-     ylims!(axX, (-2, 2))
-     zlims!(axX, (-3, 0)) 
-              # aspect=axis_equal ? :data : :auto)
-
-           #   @infiltrate
-    
-    # Scatter plot
-   scatter!(axX, log10.(xTau), log10.(xLambda), log10.(xMu), 
-             color=pointColor)
-
-    axS = Axis3(F[1, 2],
-               xlabel="TAU",
-               ylabel="SIGMA",
-               zlabel="MU")
-   #            title=title)
-    #   xlims!(axS, (-4,0))
-    #   ylims!(axS, (-4, 0))
-    #   zlims!(axS, (-2, 2))
-    scatter!(axS, log10.(fsTau), log10.(fsSigma), log10.(fsMu),
-              color=pointColor)
-            #  colormap=colormap,
-            #  colorrange=colorrange,
-            #  markersize=markersize,
-            #  alpha=alpha)
-    
-    #Colorbar
-    # if show_colorbar
-    #     Colorbar(fig[1, 2],
-    #              limits=colorrange,
-    #              colormap=colormap,
-    #              label="Value")
-    # end
-
-    display(F)
-
-    # return the plotted points as Nx3 matrices
-    return hcat((xTau, xLambda, xMu)...), hcat((fsTau, fsSigma, fsMu)...)
-
-end
-
 
 # test fractional derivative operator
 function test_dq(q::Float64=0.0, f::Float64=1.0, dt::Float64 = DEFAULT_SIMULATION_DT)
@@ -2491,8 +2004,150 @@ function test_dq(q::Float64=0.0, f::Float64=1.0, dt::Float64 = DEFAULT_SIMULATIO
 
     display(F)
 
+end
 
+# Bode plots of chinchilla torsion pendulum model
+function demo_torsionpendulum()
 
+    torsionpendulum = make_torsion_pendulum()
+
+    BodePlot(torsionpendulum, 
+        "Torsion Pendulum model of Chinchilla cupula displacement re angular velocity", 
+        1.0, 1.0/60.0, 100., 32)
+
+end
+
+# plot of example qSLIF/dynamic Exwald neuron responding to sinusoidal input current 
+# stimulus frequency f for default 4 cycles.
+# i selects neuron from 1 (very regular) to 5 (very irregular)
+# preceded with and followed by T_spont (default 1/f) seconds of spontaneous activity
+function plot_qSLIF_example(i::Int64, f::Float64=1.0, A::Float64 = 8.0, Ncycles::Int64 = 4, T_spont::Float64 = -1.0)
+
+    # default stimulus duration 
+    T_stim = Ncycles/f 
+
+    # delay before stimulus onset and wait time after stimulus offset 
+    if T_spont < 0.0
+        T_spont = 1.0/f 
+    end
+
+    # neuron descriptors
+    neuronLabel = ( "Regular canal afferent model" ,
+                    "Regular canal afferent model" ,
+                    "Intermediate canal afferent model",
+                    "Irregular canal afferent model",
+                    "Irregular canal afferent model" 
+                    )
+
+    # add edges, to be cut off after filtering (to get rid of filter edge effect)
+    T_edge = 1.0/f  
+
+    # time vector, 
+    # allow for spontaneous + edges before and after stim
+    T = T_stim +  2.0*(T_edge+T_spont)
+
+    # Stimulus is sine wave A*sin(2πft) 
+    # with zero before L and after R
+    L = T_edge+T_spont    
+    R = L + T_stim
+    stimulus(s) = (s>=L) && (s<=R) ? A*sin(2π*f*s) : 0.0
+
+    # GLR sample interval 
+    glr_dt = 0.01
+
+    # glr sample times
+    # precomputed outside loop because its the same every time
+    t = collect(0.0:glr_dt:T)   
+
+    # sample time indices with edges trimmed, for trimming GLR estimate
+    # and trimmed sample times, for plotting edge-trimmed response
+    t_index_trimmed = findall(s-> (s>=T_edge) && (s<=T-T_edge), t) 
+    t_trimmed = t[t_index_trimmed] .- T_edge
+
+    # construct the specified example neuron 
+    neuron, param, summarystats = qSLIF_example_neuron(i)
+
+    F = Figure(size = (1400, 600))
+    ax1 = Axis(F[1,1], title = neuronLabel[i])
+    ylims!(0.0, 100.0)
+    ax1.yticks = collect(0.0:10.0:100)
+    ax1.ylabel = "Spikes per second"
+
+    Nrep = 128
+
+    #t = Vector{Float64}[]
+    sptime = Vector{Float64}[]
+    sprate = Vector{Float64}[]
+
+    for rep in 1:Nrep
+
+        spt = spiketimes(neuron, stimulus, T)
+
+        spr, _ = GLR(spt, 0.125/mean(diff(spt)), T, glr_dt )       # rate estimate with edges
+
+        # trim edges from rate estimate
+        spr = spr[t_index_trimmed]
+
+        if rep < 16
+            lines!(ax1, t_trimmed, spr, linewidth = 0.75, color = (:salmon1, 1.0))
+        end
+
+        # keep spike times, edges trimmed
+        push!(sptime, spt[findall(s-> (s>=T_edge) && (s<=T-T_edge), spt)].-T_edge)
+
+        # keep firing rate estimates
+        push!(sprate, spr)
+    
+    end
+
+    # plot mean firing rate over reps
+    lines!(ax1, t_trimmed, mean(sprate), color = :orangered3, linewidth = 3 )
+
+    # plot stimulus, offset by spontaneous mean so as to overly response
+    Stlabel = @sprintf "Amplitude = %.2f, Frequency = %.2fHz" A f
+    spontmean = 1.0/summarystats[i][1]  # mean rate = 1/mean interval
+    stim = spontmean .+ [stimulus(s+T_edge) for s in t_trimmed]
+
+    lines!(ax1, t_trimmed, stim, color = :white, linewidth = 5)
+    lines!(ax1, t_trimmed, stim, color = :steelblue, linewidth = 3, label = Stlabel)
+
+    # spike train (1st rep)
+    Slabel = @sprintf "CV = %.3f, CV* = %.3f"  summarystats[i][3] summarystats[i][4]
+    splot!(ax1, sptime[i][:], 8.0, 1.0, label = Slabel)
+
+    # collect spikes in second-to-last stimulus cycle
+    period = 1.0/f
+    L = T_spont + period*(Ncycles-2) # start of cycle 
+    R = L + period   # end of cycle
+    spt_ref = Float64[]
+    for j in 1:Nrep
+        for k in 1:length(sptime[j])
+            if sptime[j][k] >= L && sptime[j][k]<R
+            push!(spt_ref, sptime[j][k])
+            end
+        end
+    end
+
+    # amplitude and phase by Fourier coeffs at frequency f 
+    amplitude, phase = fit_sine2spiketrain_Fourier(spt_ref, f, period)
+
+    # amplitude per rep, phase in degrees
+    A_resp = amplitude/Nrep
+    phaseDeg = phase*180.0/π
+    RLabel = @sprintf "Gain = %.3f, Phase = %.3fdeg" A_resp/A phaseDeg
+
+    # draw the fitted reference response
+    t_cyc = 0.0:glr_dt:period
+    lines!(L.+(phase/2π)*period.+t_cyc, spontmean .+ A_resp*sin.(2π*f*t_cyc), 
+            color = :white, linewidth = 5)
+    lines!(L.+(phase/2π)*period.+t_cyc, spontmean .+ A_resp*sin.(2π*f*t_cyc), 
+            color = :chartreuse2, linewidth = 3,
+            label = RLabel)
+    axislegend(ax1, position = :rt)
+
+    display(F)
+
+    return sptime, sprate, t, F 
 
 end
 

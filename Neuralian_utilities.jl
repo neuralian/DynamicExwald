@@ -12,82 +12,12 @@ function splot(spiketime::Vector{Float64}, height::Float64=1.0, lw::Float64=1.0)
 end
 
 
-function splot!(ax::Axis, spiketime::Vector{Float64}, height::Float64=1.0, lw::Float64=1.0, color = :blue)
+function splot!(ax::Axis, spiketime::Vector{Float64}, height::Float64=1.0, lw::Float64=1.0, color = :blue; label::String="")
 
     spikes = linesegments!(ax, vec([( Point2f(t, 0.0), Point2f(t, height)) for t in spiketime]),
-        linewidth = lw, color = color)
+        linewidth = lw, color = color, label = label)
     baseline = lines!(ax, [0.0, spiketime[end]], [0.0, 0.0], color = color)
     (spikes, baseline)
-end
-
-# Uniform Gaussian rate filter
-# Firing rate estimation by sampling Gaussians centred at spike times
-#   spiketimes, sd of Gaussian filter, dt = sampling interval, T = end time
-# MGP July 2024
-# spiketime in seconds
-# sd of Gaussian kernal for each spike (ifP length(sd)==1 then same kernel for all spikes)
-# dt = sample interval in seconds
-# pad = pad the start and end of the spike train with mirror image of spikes in first and last pad seconds 
-#       (kluge to prevent edge effects. the padded ends are removed before return) (default no pads).
-# last sample time (default rounded up to nearest second)
-function GLR(spiketime::Vector{Float64}, sd::Vector{Float64}, dt::Float64, pad::Float64=0.0, T::Float64=maximum(spiketime))
-
-    if length(sd) == 1
-        sd = sd[] * ones(length(spiketime))
-    end
-
-    if length(sd) != length(spiketime)
-        print("length mismatch: length of sd must equal number of spikes")
-        return
-    end
-
-
-    # print("length(spiketime) = "), println(length(spiketime))
-    # print("pad= "), println(pad)
-
-    if pad > 0.0
-        ifront = findall(spiketime[:] .< pad)[end:-1:1]  # indices of front pad spikes in reverse order (mirror) 
-        iback = findall(spiketime[:] .> (T - pad))[end:-1:1]
-        #infiltrate
-        spiketime = pad .+ vcat(2.0 * spiketime[1] .- spiketime[ifront[1:end-1]], spiketime, 2.0 * spiketime[iback[1]] .- spiketime[iback[2:end]])
-        sd = vcat(sd[ifront[2:end]], sd, sd[iback[2:end]])
-    end
-    # print("length(spiketime) = "), println(length(spiketime))
-
-    # vector to hold result
-    padN = Int(ceil(pad / dt))    # pad lengths
-    sigN = Int(ceil(T / dt))      # signal length (number of sample points)
-    N = sigN + 2 * padN           # padded signal length
-    t = (1:N) * dt                  # time vector  (for return)
-    r = zeros(N)                  # rate vector
-
-
-    for i in 1:length(spiketime)
-        k = Int(round(spiketime[i] / dt)) # ith spike occurs at this sample point
-        n = Int(round(4.0 * sd[i] / dt))  # number of sample points within 4 sd each side of spike
-        kernel = pdf(Normal(spiketime[i], sd[i]), k * dt .+ (-n:n) * dt)
-        kernel = kernel/sum(kernel*dt)  # normalize (each spike contributes power 1)
-        for j in -n:n  # go 4 sd each side
-            if (k + j) >= 1 && (k + j) <= N    # in bounds 
-                r[k+j] += kernel[n+j+1]
-            end
-        end
-    end
-
-    if padN>0
-        t0 = t[padN]
-    else
-        t0 = 0.0
-    end
-
-    return (t[padN.+(1:sigN)].-t0, r[padN.+(1:sigN)])
-
-
-end
-
-# utility alias for GLR (because usually length(sd)==1)
-function GLR(spiketime::Vector{Float64}, sd::Float64, dt::Float64, pad::Float64=0.0, T::Float64=maximum(spiketime))
-    GLR(spiketime, [sd], dt, pad, T)
 end
 
 # binary Float64 (1.0 or 0.0) vector from spike times 
@@ -125,6 +55,25 @@ function spiketimes2mp3(spiketime::Vector{Float64}, fileName::String="spiketrain
     spikeAudioData = spiketimes2binary(spiketime, 1.0 / audioSampleFreq)
     wavwrite(spikeAudioData, fileName*".wav", Fs=audioSampleFreq)
 end
+
+# Gaussian local rate (GLR) estimate, bandwidth f up to time T
+function GLR(spt::Vector{Float64}, f::Float64, T::Float64=-1, dt::Float64 = 0.01)
+
+    if T<0.0
+        T = maximum(spt)
+    end
+
+    # sample times
+    t = collect(0.0:dt:T)
+
+    # Gaussian filter width for Gain = 1/sqrt(2) = -3dB
+    sd = sqrt(log(2))/(2π*f)
+
+    # sampled sum of Gaussians centred at spike times, also sample times
+    return sum(pdf.(Normal(st, sd), t) for st in spt), t
+
+end
+
 
 # Kullback-Liebler divergence from ISI data to model
 # e.g loss function for optimization to fit Exwald model to ISI data
@@ -1421,7 +1370,7 @@ end
 
 # return trigger threshold for mean interval tau between threshold-crossing events 
 # for specified noise Normal(μ,s)
-function TriggerThreshold_from_PoissonTau(μ::Float64, s::Float64, τ::Float64, dt::Float64=DEFAULT_SIMULATION_DT)
+function Poisson_Trigger_Threshold(τ::Float64, μ::Float64=0.0, s::Float64=1.0, dt::Float64=DEFAULT_SIMULATION_DT)
 
     quantile(Normal(μ, s), 1.0 - dt / τ)  # returns threshold 
 
@@ -1455,9 +1404,59 @@ function CV_fromExwaldModel(mu::Float64, lambda::Float64, tau::Float64)
     exwaldVariance = expVariance + waldVariance
     exwaldMean = mu + tau
 
-    CV = sqrt(exwaldVariance)/exwaldMean
+    return sqrt(exwaldVariance)/exwaldMean
 
 end
+
+# mean, sd, cv and cv* of numerical pdf
+function pdf_stats(grid::Vector{Float64}, pdf_vals::Vector{Float64})
+    # Trapezoidal integration
+    dg   = diff(grid)
+    # mean = ∫ t·f(t) dt
+    m    = sum((grid[1:end-1] .* pdf_vals[1:end-1] .+ 
+                grid[2:end]   .* pdf_vals[2:end]) ./ 2.0 .* dg)
+    # E[t²] = ∫ t²·f(t) dt
+    et2  = sum((grid[1:end-1].^2 .* pdf_vals[1:end-1] .+ 
+                grid[2:end].^2   .* pdf_vals[2:end])   ./ 2.0 .* dg)
+    var  = et2 - m^2
+    sd = sqrt(var)
+    cv   = sd / m
+
+    cvstar = cvStar(m, cv)
+
+    return m, sd, cv, cvstar
+end
+
+# CV* from mean and CV
+# Goldberg, Smith and Fernandez (1984)
+function cvStar(m::Float64, cv::Float64)
+
+    # Goldberg, Smith and Fernandez (1984) TABLE 1
+    # They used milliseconds but we use seconds
+    tbar_tab = vec([5.0   5.5  6.0   6.5   7.0   7.5   12.5  17.5  22.5  27.5 32.5  37.5 42.5  47.5  52.5])
+    a_tab =    vec([0.36  0.4  0.46  0.53  0.55  0.56  0.84  1.15  1.49  1.66  1.68  1.8  1.82  1.88  1.93])
+    b_tab =    vec([0.63  0.66  0.73  0.79  0.8  0.81  0.97  1.02  1.04  1.01  0.96  0.93  0.91  0.9  0.89])
+
+    # seconds to ms
+    tbar = m*1000.0 
+
+       # interpolators (using BasicInterpolators.jl)
+    if (tbar<tbar_tab[1] || tbar>tbar_tab[end])  # model is out of bounds, use linear extrapolation
+        a_interpolate = LinearInterpolator(tbar_tab, a_tab, NoBoundaries())
+        b_interpolate = LinearInterpolator(tbar_tab, b_tab, NoBoundaries())
+    else
+        a_interpolate = CubicSplineInterpolator(tbar_tab, a_tab)
+        b_interpolate = CubicSplineInterpolator(tbar_tab, b_tab)
+    end
+
+    # interpolated coefficients 
+    a = a_interpolate(tbar)
+    b = b_interpolate(tbar)
+
+    return (cv/a)^(1.0/b)
+
+end
+
 
 # CV* of Exwald model test_fit_Exwald_neuron_stationary
 function CVStar_fromExwaldModel(mu::Float64, lambda::Float64, tau::Float64)
@@ -1489,7 +1488,7 @@ function CVStar_fromExwaldModel(mu::Float64, lambda::Float64, tau::Float64)
     a = a_interpolate(tbar)
     b = b_interpolate(tbar)
 
-    cvStar = (cv/a)^(1.0/b)
+    return (cv/a)^(1.0/b)
 
 end
 
@@ -1522,7 +1521,7 @@ function CVStar(ISI::Vector{Float64})
     a = a_interpolate(tbar)
     b = b_interpolate(tbar)
 
-    return cvStar = (CV/a)^(1.0/b)
+    return (CV/a)^(1.0/b)
 
 end
 
@@ -1603,355 +1602,6 @@ function Wald_parameters_from_FirstpassageTimeModel(v::Float64, s::Float64, barr
 
 end
 
-"""
-Load all .jld2 files and return as vector of named tuples
-Each tuple contains filename and data
-"""
-function process_OU2EXW(folder_path::String)
-
-    # get names of all .jld2 files in folder
-    filename = filter(f -> endswith(f, ".jld2"), readdir(folder_path))
-
-    # iniitialize using data from first file
-    RawData = load(joinpath(folder_path, filename[1]))
-    EXWparam = RawData["EXWparam"]
-    Goodness = RawData["Goodness"]
-    M, N, P  = size(EXWparam)
-
-
-    # filter using the remaining files
-    for f in 2:length(filename)
-
-        RawData = load(joinpath(folder_path, filename[f]))  
-
-        for i in 1:M 
-            for j in 1:N 
-                for k in 1:P 
-                    if RawData["EXWparam"][i,j,k][3] > EXWparam[i,j,k][3]
-
-                        EXWparam[i,j,k] = RawData["EXWparam"][i,j,k]
-                        Goodness[i,j,k] = RawData["Goodness"][i,j,k]
-
-                    end
-                end
-            end
-        end
-    end
-
-    # shoulda saved these with output data ... 
-    # check the following in demo_OU2Exwald(...)
-    mu_o = vec([.001 .002 .005 .01 .02 .05])
-    N_mu = length(mu_o)    # = N 
-    N_lambda = 8           # = M 
-    lambda_o = collect(logrange(1.0e-2, 5.0e1, length = N_lambda))
-    N_tau = 32   # = P 
-    tau_o = collect(logrange(1.0e-3, 5.0e-2; length=N_tau))
-
-    F = Figure()
-    ax = Axis(F[1,1], xscale = log10, yscale = log10, 
-                xlabel = "LIF μ",
-                ylabel = "Exwald μ",
-                xtickformat = "{:.4f}", ytickformat = "{:.5f}")
-   # ax.xticks = [.005, .01, .02, .05]
-  #  ax.title = @sprintf "LIF μ= %.4f" mu_o
-    # xlims!(ax, .001, .1)
-    # ylims!(ax, .000001, 0.1)
-
-    
-    for i in 1:N 
-        for j in 1:P 
-            lines!(mu_o, [EXWparam[n,i,j][1] for n in 1:M]) 
-        end
-        #labl = @sprintf "%.4f" lambda_o[j]
-  
-    end
-            display(F)   
-
-    return EXWparam, Goodness, F
-end
-
-# linear interpolate y(xx)
-# given y(x1) = y1, y(x2) = y2 and x1 < xx < x2
-# if x1,x2, y1 or y2 is NaN then return NaN
-# unless xx is approximately x1 or x2
-function linterp(x::Vector{Float64}, y::Vector{Float64}, xx::Float64)
-
-    if isnan(x[1])
-        if isapprox(x[2], xx, rtol = .01)  # nb isapprox(NaN, NaN, ...) is always false
-            return y[2]  # possibly NaN
-        else 
-            return NaN
-        end
-    elseif isnan(x[2])
-        if isapprox(x[1], xx, rtol = .01)  # nb isapprox(NaN, NaN, ...) is always false
-            return y[1]  # possibly NaN
-        else
-            return NaN
-        end        
-    elseif xx > x[1] && xx < x[2]
-        return y[1]*(x[2]-xx)/(x[2]-x[1]) + y[2]*(xx-x[1])/(x[2] - x[1])
-    else
-        error("Interpolation failed (xx must be between x1 and x2)")
-    end
-
-end
-
-
-# Trilinear interpolation in unit cube
-function trilinear_normalized(xd::Real, yd::Real, zd::Real, vals::Array{Float64, 3})
-    v000 = vals[1, 1, 1]
-    v100 = vals[2, 1, 1]
-    v010 = vals[1, 2, 1]
-    v110 = vals[2, 2, 1]
-    v001 = vals[1, 1, 2]
-    v101 = vals[2, 1, 2]
-    v011 = vals[1, 2, 2]
-    v111 = vals[2, 2, 2]
-
-    return (v000 * (1 - xd) * (1 - yd) * (1 - zd) +
-            v100 * xd * (1 - yd) * (1 - zd) +
-            v010 * (1 - xd) * yd * (1 - zd) +
-            v110 * xd * yd * (1 - zd) +
-            v001 * (1 - xd) * (1 - yd) * zd +
-            v101 * xd * (1 - yd) * zd +
-            v011 * (1 - xd) * yd * zd +
-            v111 * xd * yd * zd)
-end
-
-# Bilinear interpolation in unit square
-function bilinear_normalized(u::Real, v::Real, vals::Matrix{Float64})
-    return ((1 - u) * (1 - v) * vals[1, 1] +
-            u * (1 - v) * vals[2, 1] +
-            (1 - u) * v * vals[1, 2] +
-            u * v * vals[2, 2])
-end
-
-# project 3D array A3 to 2D array by averaging over dimension d
-# ignore NaNs in the average (unless everything is NaN, then average = NaN) 
-function projectmap(map3D::Array, dim::Int) 
-    
-    N  = collect(size(map3D))                     
-    D  = findall(d-> d!=dim, [1, 2, 3])    # dimensions to keep
-    d1 = D[1] 
-    d2 = D[2]
-    map2D = zeros(N[d1],N[d2])    # blank screen for 2D projection along dim
-
-    for i in 1:N[d1] 
-        for j in 1:N[d2]
-
-            count = 0     
-            for k in 1:N[dim]
-
-                # permute indices to average over dim
-                p = (i,j,k)  # if dim==3
-                if dim==1
-                    p = (j,k,i)
-                elseif dim==2
-                    p = (i,k,j)
-                end
-
-                if !isnan(map3D[p...])
-                    map2D[i,j] += map3D[p...]
-                    count += 1
-                end
-            end
-
-            if count==0   # all NaNs 
-                map2D[i,j] = NaN
-            else
-                map2D[i,j] /= count
-            end
-
-        end
-    end
-
-    return map2D
-
-end
-
-
-# 
-# e.g. map: jldsave("OUtau_mu_lambda_tau_Cloud.jld2"; OUtau, mu, lambda, tau)  
-function plot_3D_map_as_cloud(data::Array{Float64, 3},
-                               x_vals, y_vals, z_vals;
-                               colormap=:viridis,
-                               markersize=5,
-                               colorrange=nothing,
-                               alpha=1.0,
-                               threshold=nothing,  # Only plot values above threshold
-                               value_range=nothing,  # Only plot values in (min, max)
-                               show_colorbar=true,
-                               xlabel="x",
-                               ylabel="y", 
-                               zlabel="z",
-                               title="3D Point Cloud",
-                               axis_equal=false)
-    
-    x_vec = collect(x_vals)
-    y_vec = collect(y_vals)
-    z_vec = collect(z_vals)
-    
-    @assert length(x_vec) == size(data, 1) "X values must match first dimension"
-    @assert length(y_vec) == size(data, 2) "Y values must match second dimension"
-    @assert length(z_vec) == size(data, 3) "Z values must match third dimension"
-    
-    # Extract valid points
-    points_x = Float64[]
-    points_y = Float64[]
-    points_z = Float64[]
-    colors = Float64[]
-    
-    nx, ny, nz = size(data)
-    
-    for i in 1:nx
-        for j in 1:ny
-            for k in 1:nz
-                val = data[i, j, k]
-                
-                # Skip NaN
-                if isnan(val)
-                    continue
-                end
-
-                # # skip short or long
-                # mean_interval = x_vec[i]+z_vec[k]
-                # if mean_interval < 0.05 || mean_interval > 0.1
-                #     continue
-                # end 
-                
-                # Apply threshold
-                if threshold !== nothing && val < threshold
-                    continue
-                end
-                
-                # Apply value range
-                if value_range !== nothing
-                    vmin, vmax = value_range
-                    if val < vmin || val > vmax
-                        continue
-                    end
-                end
-                
-                push!(points_x, x_vec[i])
-                push!(points_y, y_vec[j])
-                push!(points_z, z_vec[k])
-                push!(colors, val)
-            end
-        end
-    end
-    
-    if isempty(colors)
-        @warn "No valid points to plot!"
-        return nothing
-    end
-    
-    # Color range
-    if colorrange === nothing
-        colorrange = (minimum(colors), maximum(colors))
-    end
-    
-    # Create figure
-    fig = Figure(size=(600, 600))
-    ax3 = Axis3(fig[1, 1], 
-               xlabel=xlabel,
-               ylabel=ylabel,
-               zlabel=zlabel,
-               title=title)
-    xlims!(ax3, (-4,0))
-    ylims!(ax3, (-2, 2))
-    zlims!(ax3, (-5, -1))
-              # aspect=axis_equal ? :data : :auto)
-    
-    # Scatter plot
-    scatter!(ax3, log10.(points_x), log10.(points_y), log10.(points_z),
-             color=colors,
-             colormap=colormap,
-             colorrange=colorrange,
-             markersize=markersize,
-             alpha=alpha)
-    
-    Colorbar
-    if show_colorbar
-        Colorbar(fig[1, 2],
-                 limits=colorrange,
-                 colormap=colormap,
-                 label="Value")
-    end
-
-
-    # ax_tau_mu = Axis(fig[1,2])
-    # heatmap!(ax_tau_mu, projectmap(data, 2) )
-
-    # ax_lambda_mu = Axis(fig[2,1])
-    # heatmap!(ax_lambda_mu, projectmap(data, 3) )
-
-    # ax_tau_lambda = Axis(fig[2,2])
-    # heatmap!(ax_tau_lambda, projectmap(data, 1) )
-
-    display(fig)
-
-
-    println("Plotted $(length(colors)) points")
-    
-    return fig
-end
-
-
-function plot_linked_points(A::Matrix{Float64}, B::Matrix{Float64})
-    # Basic validation
-    size(A) == size(B) || error("Matrices A and B must have the same dimensions")
-    
-    # Create the figure
-    fig = Figure(size = (1200, 600))
-    
-    # Define axes
-    ax1 = Axis3(fig[1, 1], title = "Set A")
-    ax2 = Axis3(fig[1, 2], title = "Set B")
-    
-    # This Observable tracks the index of the currently selected point
-    # We initialize it to 0 (no selection)
-    selected_idx = Observable(0)
-    
-    # Create color arrays that update when selected_idx changes
-           c = fill(:blue, size(A, 1))
-    colors = lift(selected_idx) do idx
-      #  c = fill(:blue, size(A, 1))
-        if idx > 0 && idx <= length(c)
-            c[idx] = :red # Highlight color
-        end
-        return c
-    end
-
-    # Plot the points
-    # We use rows as points: A[:, 1], A[:, 2], A[:, 3]
-    markersize = 8
-    plt1 = scatter!(ax1, log10.(A[:, 1]), log10.(A[:, 2]), log10.(A[:, 3]), color = colors, markersize = markersize)
-    xlims!(ax1, -5, -1)
-    ylims!(ax1, -2,2)
-    zlims!(ax1, -4, 0)
-    plt2 = scatter!(ax2, log10.(B[:, 1]), log10.(B[:, 2]), log10.(B[:, 3]), color = colors, markersize = markersize)
-
-    # Interaction logic
-    on(events(fig).mousebutton) do event
-        if event.button == Mouse.left && event.action == Mouse.press
-            # Pick the plot object under the mouse
-            plt, idx = pick(fig)
-            
-            # Check if we clicked a point in plot 1 or plot 2
-            if plt in (plt1, plt2) && idx > 0
-                selected_idx[] = idx
-                
-                # Print coordinates to REPL
-                println("\nSelected Point Index: $idx")
-                println("Coord A: $(A[idx, :])")
-                println("Coord B: $(B[idx, :])")
-            end
-        end
-    end
-
-    return fig, ax1, ax2
-end
-
 # --- Example Usage ---
 # Generate some dummy data
 # N = 50
@@ -1982,94 +1632,6 @@ function findvrange(mu_0, taus)
     return vmin, vmax
 
 end
-
-# set of n points uniformly distributed in log-log axes
-# along a line between a = (x0, y0) and b = (x1,y1)
-# (where a and b are untransformed coords) 
-function points_along_lineLogLog(a, b, n)
-
-    # transform to log-log space
-    x0L, y0L = log10(a[1]), log10(a[2])
-    x1L, y1L = log10(b[1]), log10(b[2])
-
-    # slope in log-log space
-    s = (y1L-y0L)/(x1L - x0L)
-    println("Slope = ", s)
-
-    # n points along the line
-    xL = range(x0L, x1L, length = n)
-    yL = range(y0L, y1L, length = n)
-
-    # back transform 
-    x = 10.0 .^ xL
-    y = 10.0 .^ yL
-
-    return x,y, s
-
-end
-
-# n equally spaced points along a straight line of length Length
-# and slope slope in log-log axes
-function points_along_lineLogLog(x0, y0, len, slope, n)
-   
-    # start point in log space
-    x0L, y0L = log10(x0), log10(y0)
-    
-    # slope in radians
-    θ = atan(slope)
-    
-    # distances along the line
-    d = range(0, len, length=n)
-    
-    # log-space coordinates of points on line
-    xL = x0L .+ d .* cos(θ)
-    yL = y0L .+ d .* sin(θ)
-
-    # Transform back 
-    return 10 .^ xL, 10 .^ yL
-end
-
-using GLMakie
-
-
-#  n points on a circle of radius 'r' in log-log axes
-function log_circle(x_center, y_center, r, n=8)
-    # 1. Move the center to log-space
-    lc_x = log10(x_center)
-    lc_y = log10(y_center)
-    
-    # 2. Generate angles from 0 to 2π
-    #θ = range(0, 2π, length=n)
-    θ = 2pi*(0:n-1)/n
-
-    # 3. Calculate points on the circle in log-space
-    # x = center + r*cos(θ), y = center + r*sin(θ)
-    lx_points = lc_x .+ r .* cos.(θ)
-    ly_points = lc_y .+ r .* sin.(θ)
-    
-    # 4. Transform back to original units
-    return 10 .^ lx_points, 10 .^ ly_points
-end
-
-# # --- Visualization ---
-# x_c, y_c = 100.0, 100.0  # Center of the circle
-# radius = 0.5            # Radius in log-units (half an order of magnitude)
-
-# x_vals, y_vals = log_circle(x_c, y_c, radius, 16)
-
-# fig = Figure()
-# ax = Axis(fig[1, 1], 
-#     xscale = log10, 
-#     yscale = log10,
-#     aspect = DataAspect(), # Essential: makes 1 unit on x equal 1 unit on y visually
-#     title = "Circle in Log-Log Space"
-# )
-
-# scatter!(ax, x_vals, y_vals, color = :magenta)
-# scatter!(ax, [x_c], [y_c], color = :black) # Plot the center point
-
-# display(fig)
-
 
 # v0 parameter of SLIF model required to get mean interval length mu 
 # given time constant tau (with threshold 1)
@@ -2133,3 +1695,184 @@ function quantize_intervals(ISI::Vector{Float64}, samplePeriod::Float64=300.0e-6
 
     return diff([0.0; qst])                     # return quantized intervals
 end
+
+# n points logarithmically spaced from f0 to f1
+logspace(f0, f1, n) = exp10.(range(log10(f0), log10(f1), length=n))
+
+# draw Bode plots, Gain and Phase of t->response(sin(2πft))
+# over bandwidth specified in Hz. 
+# Gain & phase averaged over Ncycles after burn-in time
+# function BodePlot(response::Function, f0::Float64 = .01, f1::Float64 = 25.0,
+function BodePlot(response::Function, title::String = "Chinchilla Cupula Displacement", A::Float64 = 1.0, 
+                  f0::Float64 = 0.01, f1::Float64 = 25.0, 
+                  nf::Int64 = 16, Ncycles::Int64 = 8, 
+                  burntime::Float64 = 1/f0;
+                  dt::Float64 = DEFAULT_SIMULATION_DT)
+
+    freqs  = exp10.(range(log10(f0), log10(f1), length=nf))
+    gains  = zeros(nf)
+    phases = zeros(nf)
+
+    for (i, f) in enumerate(freqs)
+
+        period   = 1.0 / f
+        meastime = Ncycles * period
+        T        = burntime + meastime
+        n_burn   = round(Int, burntime / dt)
+        n_meas   = round(Int, meastime / dt)
+        n_total  = n_burn + n_meas
+
+        # Run simulation
+        t_vec = (1:n_total) .* dt
+        u     = t -> A * sin(2π * f * t)
+        out   = zeros(n_total)
+        for k in 1:n_total
+            y = response(u, t_vec[k])
+            out[k] = y isa Tuple ? y[1] : y   # because some response functions return state not output
+        end
+
+        # Discard burn-in, keep measurement window
+        y = out[n_burn+1:end]
+        t = t_vec[n_burn+1:end]
+
+        # Fit sine at stimulus frequency by linear regression
+        # y ≈ C1*sin(2πft) + C2*cos(2πft)
+        # → gain  = sqrt(C1² + C2²) / A
+        # → phase = atan(-C2, C1)   [relative to input sin]
+        S  = sin.(2π .* f .* t)
+        C  = cos.(2π .* f .* t)
+        # Least squares: [S C] \ y
+        M       = hcat(S, C)
+        coeffs  = M \ y
+        C1, C2  = coeffs[1], coeffs[2]
+
+        gains[i]  = sqrt(C1^2 + C2^2) / A
+        phases[i] = atan(C2, C1)      # phase lag in radians
+
+        @printf("f=%6.3f Hz   gain=%8.4f   phase=%7.3f rad (%6.1f deg)\n",
+                f, gains[i], phases[i], rad2deg(phases[i]))
+    end
+
+    # normalize gains (maximum gain = 1.0)
+    gains = gains/maximum(gains)
+
+    # ── Bode plot ────────────────────────────────────────────────────────────
+    gain_dB = 20 .* log10.(gains)
+
+    fig = Figure(size=(800, 600))
+
+    ax1 = Axis(fig[1,1],
+               xscale      = log10,
+               ylabel      = "Normalized Gain (dB)",
+               title       = title,
+               xticksvisible = false,
+               xticklabelsvisible = false)
+
+    ax2 = Axis(fig[2,1],
+               xscale  = log10,
+               xlabel  = "Frequency (Hz)",
+               ylabel  = "Phase (deg)")
+
+    lines!(ax1, freqs, gain_dB;  color=:steelblue, linewidth=2)
+    scatter!(ax1, freqs, gain_dB; color=:steelblue, markersize=4)
+
+    lines!(ax2, freqs, rad2deg.(phases);  color=:crimson, linewidth=2)
+    scatter!(ax2, freqs, rad2deg.(phases); color=:crimson, markersize=4)
+
+    # Zero dB and zero phase reference lines
+    hlines!(ax1, [0.0]; linestyle=:dash, color=:gray, linewidth=1)
+    hlines!(ax2, [0.0]; linestyle=:dash, color=:gray, linewidth=1)
+
+    rowsize!(fig.layout, 1, Relative(0.5))
+    display(fig)
+
+    return freqs, gains, phases, fig
+end
+
+
+# draw Bode plots, Gain and Phase of t->response(sin(2πft)) for spiking neuron model
+# over bandwidth specified in Hz. 
+# Gain & phase averaged over Ncycles after burn-in time
+# function BodePlot(response::Function, f0::Float64 = .01, f1::Float64 = 25.0,
+function spikingneuron_BodePlot(neuron::Function, title::String = "Chinchilla Cupula Displacement", A::Float64 = 1.0, 
+                  f0::Float64 = 0.01, f1::Float64 = 25.0, 
+                  nf::Int64 = 16, Ncycles::Int64 = 8, 
+                  burntime::Float64 = 1/f0;
+                  dt::Float64 = DEFAULT_SIMULATION_DT)
+
+    freqs  = exp10.(range(log10(f0), log10(f1), length=nf))
+    gains  = zeros(nf)
+    phases = zeros(nf)
+
+    for (i, f) in enumerate(freqs)
+
+        period   = 1.0 / f
+        meastime = Ncycles * period
+        T        = burntime + meastime
+        n_burn   = round(Int, burntime / dt)
+        n_meas   = round(Int, meastime / dt)
+        n_total  = n_burn + n_meas
+
+        # Simulate neuron and estimate rate at stimulus bandwidth
+        t_vec = (1:n_total) .* dt
+        u     = t -> A * sin(2π * f * t)
+        out   = GLR(spiketimes(neuron, u, T), f, T)
+
+        # Discard burn-in, keep measurement window
+        y = out[n_burn+1:end]
+        t = t_vec[n_burn+1:end]
+
+        # Fit sine at stimulus frequency by linear regression
+        # y ≈ C1*sin(2πft) + C2*cos(2πft)
+        # → gain  = sqrt(C1² + C2²) / A
+        # → phase = atan(-C2, C1)   [relative to input sin]
+        S  = sin.(2π .* f .* t)
+        C  = cos.(2π .* f .* t)
+        # Least squares: [S C] \ y
+        M       = hcat(S, C)
+        coeffs  = M \ y
+        C1, C2  = coeffs[1], coeffs[2]
+
+        gains[i]  = sqrt(C1^2 + C2^2) / A
+        phases[i] = atan(C2, C1)      # phase lag in radians
+
+        @printf("f=%6.3f Hz   gain=%8.4f   phase=%7.3f rad (%6.1f deg)\n",
+                f, gains[i], phases[i], rad2deg(phases[i]))
+    end
+
+    # normalize gains (maximum gain = 1.0)
+    gains = gains/maximum(gains)
+
+    # ── Bode plot ────────────────────────────────────────────────────────────
+    gain_dB = 20 .* log10.(gains)
+
+    fig = Figure(size=(800, 600))
+
+    ax1 = Axis(fig[1,1],
+               xscale      = log10,
+               ylabel      = "Normalized Gain (dB)",
+               title       = title,
+               xticksvisible = false,
+               xticklabelsvisible = false)
+
+    ax2 = Axis(fig[2,1],
+               xscale  = log10,
+               xlabel  = "Frequency (Hz)",
+               ylabel  = "Phase (deg)")
+
+    lines!(ax1, freqs, gain_dB;  color=:steelblue, linewidth=2)
+    scatter!(ax1, freqs, gain_dB; color=:steelblue, markersize=4)
+
+    lines!(ax2, freqs, rad2deg.(phases);  color=:crimson, linewidth=2)
+    scatter!(ax2, freqs, rad2deg.(phases); color=:crimson, markersize=4)
+
+    # Zero dB and zero phase reference lines
+    hlines!(ax1, [0.0]; linestyle=:dash, color=:gray, linewidth=1)
+    hlines!(ax2, [0.0]; linestyle=:dash, color=:gray, linewidth=1)
+
+    rowsize!(fig.layout, 1, Relative(0.5))
+    display(fig)
+
+    return freqs, gains, phases, fig
+end
+
