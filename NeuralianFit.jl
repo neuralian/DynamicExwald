@@ -392,14 +392,15 @@ end
 
 # Fit a sine wave to spike train (spike times) at specified frequency Hz
 # return amplitude and phase
-function fit_sine2spiketrain_Fourier(spt::Vector{Float64}, f::Float64, T::Float64)
+function fit_sine2spiketrain_Fourier(spt::Vector{Float64}, f::Float64, T::Float64, 
+            Ncycles::Int64=1, Nrep::Int64=1)
     n  = length(spt)
     φ  = 2π .* f .* spt
     A  =  2/T * sum(sin.(φ))    # sine coefficient
     B  =  2/T * sum(cos.(φ))    # cosine coefficient
     r0 = n / T                  # mean rate
 
-    amplitude = sqrt(A^2 + B^2)
+    amplitude = sqrt(A^2 + B^2)/(Ncycles*Nrep)
     phase     = atan(-B, A)
 
     return (amplitude=amplitude, phase=phase, r0=r0, A=A, B=B)

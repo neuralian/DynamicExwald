@@ -74,6 +74,48 @@ function GLR(spt::Vector{Float64}, f::Float64, T::Float64=-1, dt::Float64 = 0.01
 
 end
 
+# Gaussian local rate (GLR) estimate, cosine-modulated + rectified
+#   - linear gain = 1.0 exactly at DC (0 Hz)
+#   - linear gain = 1.0 exactly at the oscillation frequency f Hz
+#   - kernel may go negative (interpretable as "invisible negative spikes")
+#   - final rate clipped ≥ 0 (realistic non-negative firing rate)
+#   - same kernel width as original GLR (graceful roll-off, no ringing)
+function GLRF(spt::Vector{Float64}, f::Float64, T::Float64=-1, dt::Float64 = 0.01)
+
+    if T < 0.0
+        T = maximum(spt)
+    end
+
+    # sample times
+    t = collect(0.0:dt:T)
+
+    # base Gaussian width (exactly the same as original: -3 dB at f Hz)
+    sd = sqrt(log(2)) / (2π * f)
+
+    # frequency response of the base Gaussian at the target frequencies
+    ω0 = 2π * f
+    G_f  = exp(-0.5 * (sd * ω0)^2)          # exactly 1/√2
+    G_2f = exp(-0.5 * (sd * 2ω0)^2)         # exactly 0.25
+
+    # solve for α, β so that the composite filter H(0) = 1 and H(ω0) = 1
+    # (derived from H(ω) = α G(ω) + (β/2)[G(ω-ω0) + G(ω+ω0)])
+    denom = 0.5 * (1 + G_2f) - G_f^2
+    β = (1 - G_f) / denom
+    α = 1 - β * G_f
+
+    # build modulated kernel (may be negative)
+    rate = zeros(length(t))
+    for st in spt
+        g = pdf.(Normal(st, sd), t)
+        rate .+= α .* g .+ β .* g .* cos.(ω0 .* (t .- st))
+    end
+
+    # rectifier: clip negative values (consistent with "invisible negative spikes")
+    rate = max.(0.0, rate)
+
+    return rate, t
+end
+
 
 # Kullback-Liebler divergence from ISI data to model
 # e.g loss function for optimization to fit Exwald model to ISI data
@@ -1876,3 +1918,232 @@ function spikingneuron_BodePlot(neuron::Function, title::String = "Chinchilla Cu
     return freqs, gains, phases, fig
 end
 
+function reposition_legend!(fig::Figure, position)
+    ax = first(x for x in fig.content if x isa Axis)
+    for element in copy(fig.content)
+        element isa Legend && delete!(element)
+    end
+    axislegend(ax; position=position)
+    display(F)
+end
+
+function phase_histogram_inset!(fig, ax1, spt::Vector{Float64}, f::Float64, T_spont::Float64;
+                                 inset_x::Float64    = 0.05,    # left edge of inset
+                                 inset_y::Float64    = 0.6,    # bottom edge of inset
+                                 inset_w::Float64    = 0.12,   # width
+                                 inset_h::Float64    = 0.36,   # height
+                                 n_sectors::Int      = 24,
+                                 title::String       = "",
+                                 markercolor         = :steelblue)
+
+    stim_spikes = filter(t -> t >= T_spont, spt)
+    n_spikes    = length(stim_spikes)
+    n_spikes == 0 && (@warn "No spikes during stimulus"; return nothing)
+
+    phases_rad = mod.(2π .* f .* (stim_spikes .- T_spont) .- π/2, 2π)
+
+    sector_width_rad = 2π / n_sectors
+    counts           = zeros(n_sectors)
+    for φ in phases_rad
+        i = floor(Int, φ / sector_width_rad) + 1
+        counts[clamp(i, 1, n_sectors)] += 1
+    end
+
+    # Log scaling — uniform = 0.5
+    expected = n_spikes / n_sectors
+    radii    = 0.5 .* (1.0 .+ log.(max.(counts, 0.5) ./ expected) ./ log(n_sectors))
+    radii    = clamp.(radii, 0.0, 1.0)
+
+    R          = sqrt(mean(sin.(phases_rad))^2 + mean(cos.(phases_rad))^2)
+    mean_phase = atan(mean(sin.(phases_rad)), mean(cos.(phases_rad)))
+
+    # ── Convert fractional ax1 coordinates to figure bbox ───────────────────
+    # Get ax1 pixel bounds
+    ax1_scene  = ax1.scene
+    px         = ax1_scene.viewport[]
+    ax1_left   = px.origin[1]
+    ax1_bottom = px.origin[2]
+    ax1_width  = px.widths[1]
+    ax1_height = px.widths[2]
+
+    # Convert 0-1 fractions to pixel coordinates
+    left   = ax1_left   + inset_x * ax1_width
+    bottom = ax1_bottom + inset_y * ax1_height
+    width  = inset_w * ax1_width
+    height = inset_h * ax1_height
+
+    # Create inset axis with absolute pixel bbox
+    ax_inset = Axis(fig;
+                    bbox    = Makie.BBox(left, left+width, bottom, bottom+height),
+                    aspect  = DataAspect(),
+                    title   = title,
+                    titlesize = 10,
+                    xticksvisible = false,
+                    yticksvisible = false,
+                    xgridvisible = false,
+                    ygridvisible = false,
+                    xticklabelsvisible = false,
+                    yticklabelsvisible = false,
+                    leftspinevisible   = false,
+                    rightspinevisible  = false,
+                    topspinevisible    = false,
+                    bottomspinevisible = false)
+
+    limits!(ax_inset, -1.4, 1.4, -1.4, 1.4)
+
+    # ── Draw polar histogram ─────────────────────────────────────────────────
+    θ_circle = range(0, 2π, length=200)
+
+    # Reference circles
+    for r in [0.25, 0.5, 0.75, 1.0]
+        if r == 0.5
+            lines!(ax_inset, r .* sin.(θ_circle), r .* cos.(θ_circle);
+                   color=:red, linewidth=1.5, linestyle=:dot)
+        else
+            lines!(ax_inset, r .* sin.(θ_circle), r .* cos.(θ_circle);
+                   color=(:gray, 0.3), linewidth=0.5)
+        end
+    end
+
+    # Radial lines and labels at 90° intervals only (keep it clean at small size)
+    for θ_deg in 0:90:270
+        θ = deg2rad(θ_deg)
+        lines!(ax_inset, [0.0, sin(θ)], [0.0, cos(θ)];
+               color=(:gray, 0.3), linewidth=0.5)
+        label = @sprintf "%d°" θ_deg
+        text!(ax_inset, 1.3*sin(θ), 1.3*cos(θ);
+              text=label, align=(:center, :center), fontsize=8)
+    end
+
+    # Sectors
+    for i in 1:n_sectors
+        r = radii[i]
+        r == 0.0 && continue
+        θ_lo    = (i-1) * sector_width_rad
+        θ_hi    =  i    * sector_width_rad
+        θ_range = range(θ_lo, θ_hi, length=20)
+        xs = vcat(0.0, r .* sin.(θ_range), 0.0)
+        ys = vcat(0.0, r .* cos.(θ_range), 0.0)
+        poly!(ax_inset, Point2f.(xs, ys);
+              color=(markercolor, 0.7), strokecolor=:white, strokewidth=0.5)
+    end
+
+    # Mean phase arrow
+    lines!(ax_inset, [0.0, R*sin(mean_phase)], [0.0, R*cos(mean_phase)];
+           color=:crimson, linewidth=2.0)
+    scatter!(ax_inset, [R*sin(mean_phase)], [R*cos(mean_phase)];
+             color=:crimson, markersize=8)
+
+    # # R and n annotation
+    # text!(ax_inset, 0.0, -1.35;
+    #       text=@sprintf("R=%.2f n=%d", R, n_spikes),
+    #       align=(:center, :center), fontsize=8)
+
+    display(fig)
+    return ax_inset
+end
+
+# Vector{Vector{Float64}} method
+function phase_histogram_inset!(fig, ax1, spt::Vector{Vector{Float64}}, f::Float64,
+                                 T_spont::Float64; kwargs...)
+    phase_histogram_inset!(fig, ax1, vcat(spt...), f, T_spont; kwargs...)
+end
+
+# phase histogram in axes
+function phase_histogram!(ax, spt::Vector{Float64}, f::Float64, T_spont::Float64;
+                                 n_sectors::Int      = 24,
+                                 title::String       = "",
+                                 markercolor         = :steelblue)
+
+    stim_spikes = filter(t -> t >= T_spont, spt)
+    n_spikes    = length(stim_spikes)
+    n_spikes == 0 && (@warn "No spikes during stimulus"; return nothing)
+
+    phases_rad = mod.(2π .* f .* (stim_spikes .- T_spont) .- π/2, 2π)
+
+    sector_width_rad = 2π / n_sectors
+    counts           = zeros(n_sectors)
+    for φ in phases_rad
+        i = floor(Int, φ / sector_width_rad) + 1
+        counts[clamp(i, 1, n_sectors)] += 1
+    end
+
+    # Log scaling — uniform = 0.5
+    expected = n_spikes / n_sectors
+    radii    = 0.5 .* (1.0 .+ log.(max.(counts, 0.5) ./ expected) ./ log(n_sectors))
+    radii    = clamp.(radii, 0.0, 1.0)
+
+    R          = sqrt(mean(sin.(phases_rad))^2 + mean(cos.(phases_rad))^2)
+    mean_phase = atan(mean(sin.(phases_rad)), mean(cos.(phases_rad)))
+
+    # ── Draw polar histogram ─────────────────────────────────────────────────
+    θ_circle = range(0, 2π, length=200)
+
+    # Reference circles
+    for r in [0.25, 0.75]
+        lines!(ax, r .* sin.(θ_circle), r .* cos.(θ_circle);
+                    color=(:gray, 0.3), linewidth=0.5)                  
+    end
+
+    # dotted red line = expected value for uniform distribution
+    lines!(ax, 0.5 .* sin.(θ_circle), 0.5 .* cos.(θ_circle);
+                    color=:red, linewidth=1.5, linestyle=:dot)
+    
+    # solid line = 100% lock
+    lines!(ax, 1.0 .* sin.(θ_circle), 1.0 .* cos.(θ_circle);
+                    color=:black, linewidth=1)
+
+    # Radial lines and labels at 90° intervals only (keep it clean at small size)
+    for θ_deg in [0, 90, -90]
+        θ = deg2rad(θ_deg)
+        lines!(ax, [0.0, sin(θ)], [0.0, cos(θ)];
+               color=(:gray, 0.3), linewidth=0.5)
+        label = @sprintf "%d°" θ_deg
+        text!(ax, 1.3*sin(θ), 1.3*cos(θ);
+              text=label, align=(:center, :center), fontsize=14)
+    end
+
+    # Sectors
+    for i in 1:n_sectors
+        r = radii[i]
+        r == 0.0 && continue
+        θ_lo    = (i-1) * sector_width_rad
+        θ_hi    =  i    * sector_width_rad
+        θ_range = range(θ_lo, θ_hi, length=20)
+        xs = vcat(0.0, r .* sin.(θ_range), 0.0)
+        ys = vcat(0.0, r .* cos.(θ_range), 0.0)
+        poly!(ax, Point2f.(xs, ys);
+              color=(markercolor, 0.7), strokecolor=:white, strokewidth=0.5)
+    end
+
+    # Mean phase arrow
+    lines!(ax, [0.0, R*sin(mean_phase)], [0.0, R*cos(mean_phase)];
+           color=:crimson, linewidth=2.0)
+    scatter!(ax, [R*sin(mean_phase)], [R*cos(mean_phase)];
+             color=:crimson, markersize=8)
+
+    text!(ax, 0.48, 0.9, 
+      text = " lead ←",
+      space = :relative,
+      align = (:right, :top),
+      fontsize = 14,
+      color = :black)
+
+    text!(ax, 0.52, 0.9, 
+      text = "→ lag",
+      space = :relative,
+      align = (:left, :top),
+      fontsize = 14,
+      color = :black)
+
+    # # R and n annotation
+    # text!(ax_inset, 0.0, -1.35;
+    #       text=@sprintf("R=%.2f n=%d", R, n_spikes),
+    #       align=(:center, :center), fontsize=8)
+
+end
+
+# Vector{Vector{Float64}} method
+function phase_histogram!(ax, spt::Vector{Vector{Float64}}, f::Float64, T_spont::Float64)
+    phase_histogram!(ax, vcat(spt...), f, T_spont)
+end

@@ -2021,7 +2021,8 @@ end
 # stimulus frequency f for default 4 cycles.
 # i selects neuron from 1 (very regular) to 5 (very irregular)
 # preceded with and followed by T_spont (default 1/f) seconds of spontaneous activity
-function plot_qSLIF_example(i::Int64, f::Float64=1.0, A::Float64 = 8.0, Ncycles::Int64 = 4, T_spont::Float64 = -1.0)
+function plot_qSLIF_example(i::Int64, f::Float64=1.0, A::Float64 = 8.0, 
+        Ncycles::Int64 = 4, Nrep::Int64 = 128, T_spont::Float64 = -1.0)
 
     # default stimulus duration 
     T_stim = Ncycles/f 
@@ -2031,12 +2032,14 @@ function plot_qSLIF_example(i::Int64, f::Float64=1.0, A::Float64 = 8.0, Ncycles:
         T_spont = 1.0/f 
     end
 
+    period = 1.0/f
+
     # neuron descriptors
-    neuronLabel = ( "Regular canal afferent model" ,
-                    "Regular canal afferent model" ,
-                    "Intermediate canal afferent model",
-                    "Irregular canal afferent model",
-                    "Irregular canal afferent model" 
+    neuronLabel = ( "Regular afferent (1)" ,
+                    "Regular afferent (2)" ,
+                    "Intermediate afferent (3)",
+                    "Irregular afferent (4)",
+                    "Irregular afferent (5)" 
                     )
 
     # add edges, to be cut off after filtering (to get rid of filter edge effect)
@@ -2053,7 +2056,7 @@ function plot_qSLIF_example(i::Int64, f::Float64=1.0, A::Float64 = 8.0, Ncycles:
     stimulus(s) = (s>=L) && (s<=R) ? A*sin(2π*f*s) : 0.0
 
     # GLR sample interval 
-    glr_dt = 0.01
+    glr_dt = 0.01/f
 
     # glr sample times
     # precomputed outside loop because its the same every time
@@ -2063,91 +2066,136 @@ function plot_qSLIF_example(i::Int64, f::Float64=1.0, A::Float64 = 8.0, Ncycles:
     # and trimmed sample times, for plotting edge-trimmed response
     t_index_trimmed = findall(s-> (s>=T_edge) && (s<=T-T_edge), t) 
     t_trimmed = t[t_index_trimmed] .- T_edge
+    N_trimmed = length(t_trimmed)
 
     # construct the specified example neuron 
     neuron, param, summarystats = qSLIF_example_neuron(i)
 
-    F = Figure(size = (1400, 600))
+    F = Figure(size = (1400, 400), fontsize=14)
     ax1 = Axis(F[1,1], title = neuronLabel[i])
     ylims!(0.0, 100.0)
     ax1.yticks = collect(0.0:10.0:100)
     ax1.ylabel = "Spikes per second"
 
-    Nrep = 128
+    # will compute GLR every time but only show it 
+    # if there are enough spikes per stimulus cycle on every rep for this to not be messy
+    spikecount = 0.0  # count spikes after 1st cycle and to end of stimulus in each rep
+    show_GLR = true
+    minSpikeCount = 1.0
 
-    #t = Vector{Float64}[]
-    sptime = Vector{Float64}[]
-    sprate = Vector{Float64}[]
+    # start and end time for extracting spikes for Fourier analysis
+    L = T_edge+T_spont+period   # start of 2nd stimulus cycle
+    R = T-T_edge-T_spont        # end of stimulus
 
+    # containers for spike times and rate samples
+    spt = Vector{Float64}()                        # holds 1 complete spike train, visible after loop 
+    sptime = Vector{Vector{Float64}}(undef, Nrep)  # holds all spike trains, trimmed to stimulus epoch
+    sprate = [zeros(Float64, N_trimmed) for _ in 1:Nrep]
+
+    # simulation loop
     for rep in 1:Nrep
 
+        # spiketrain by simulation
         spt = spiketimes(neuron, stimulus, T)
 
-        spr, _ = GLR(spt, 0.125/mean(diff(spt)), T, glr_dt )       # rate estimate with edges
-
-        # trim edges from rate estimate
-        spr = spr[t_index_trimmed]
-
-        if rep < 16
-            lines!(ax1, t_trimmed, spr, linewidth = 0.75, color = (:salmon1, 1.0))
+        # extract spikes between start of 2nd cycle and end of stimulus, for Fourier analysis
+        sptime[rep] = filter(s-> (s>=L) && (s<=R), spt) .- L
+    
+        # count spikes
+        sc = length(sptime[rep])
+        spikecount = spikecount + sc
+        #  turn off GLR display if not enough spikes on any rep
+        if sc/(Ncycles-1) < minSpikeCount
+            show_GLR = false
         end
 
-        # keep spike times, edges trimmed
-        push!(sptime, spt[findall(s-> (s>=T_edge) && (s<=T-T_edge), spt)].-T_edge)
+        # compute GLR in any case
+        spr, _ = GLRF(spt, f, T, glr_dt )       # rate estimate tuned to f
 
-        # keep firing rate estimates
-        push!(sprate, spr)
-    
+        # rate estimate, edges trimmed
+        sprate[rep] = spr[t_index_trimmed]
+
     end
 
-    # plot mean firing rate over reps
-    lines!(ax1, t_trimmed, mean(sprate), color = :orangered3, linewidth = 3 )
+    # plot GLR firing rate, up to 16 reps & mean
+    if show_GLR
+        for rep in 1:min(Nrep,16)
+            lines!(ax1, t_trimmed, sprate[rep], linewidth = 0.5, color = (:salmon1, 1.0))
+        end
+        lines!(ax1, t_trimmed, mean(sprate), color = :orangered3, linewidth = 2 )
+    end
 
     # plot stimulus, offset by spontaneous mean so as to overly response
     Stlabel = @sprintf "Amplitude = %.2f, Frequency = %.2fHz" A f
     spontmean = 1.0/summarystats[i][1]  # mean rate = 1/mean interval
     stim = spontmean .+ [stimulus(s+T_edge) for s in t_trimmed]
 
-    lines!(ax1, t_trimmed, stim, color = :white, linewidth = 5)
-    lines!(ax1, t_trimmed, stim, color = :steelblue, linewidth = 3, label = Stlabel)
+    lines!(ax1, t_trimmed, stim, color = :white, linewidth = 3)
+    lines!(ax1, t_trimmed, stim, color = :deepskyblue3, linewidth = show_GLR ? 2 : 0.5, label = Stlabel)
 
-    # spike train (1st rep)
+    # spike train (2nd rep)
     Slabel = @sprintf "CV = %.3f, CV* = %.3f"  summarystats[i][3] summarystats[i][4]
-    splot!(ax1, sptime[i][:], 8.0, 1.0, label = Slabel)
+    splot!(ax1, filter(s->(s>T_edge) && (s<T-T_edge), spt) .- T_edge, 8.0, 1.0, label = Slabel)
 
-    # collect spikes in second-to-last stimulus cycle
-    period = 1.0/f
-    L = T_spont + period*(Ncycles-2) # start of cycle 
-    R = L + period   # end of cycle
-    spt_ref = Float64[]
-    for j in 1:Nrep
-        for k in 1:length(sptime[j])
-            if sptime[j][k] >= L && sptime[j][k]<R
-            push!(spt_ref, sptime[j][k])
-            end
-        end
-    end
+    # amplitude and phase of spikes between 2nd cycle & end stimulus
+    # at frequency f via Fourier coeffs  
+    amplitude, phase = fit_sine2spiketrain_Fourier(vcat(sptime...), f, period, Ncycles-1, Nrep)
 
-    # amplitude and phase by Fourier coeffs at frequency f 
-    amplitude, phase = fit_sine2spiketrain_Fourier(spt_ref, f, period)
-
-    # amplitude per rep, phase in degrees
-    A_resp = amplitude/Nrep
+    # draw the fitted response
+    gain = amplitude/A
     phaseDeg = phase*180.0/π
-    RLabel = @sprintf "Gain = %.3f, Phase = %.3fdeg" A_resp/A phaseDeg
+    RLabel = @sprintf "Gain = %.2f, Phase = %.1f degrees" gain phaseDeg
+    t_cyc = 0.0:glr_dt:(period*(Ncycles-2))   
+    # lines!(L.+(phase/2π)*period.+t_cyc, spontmean .+ A_resp*sin.(2π*f*t_cyc), 
+    #         color = :white, linewidth = 5)
+    lines!(L.+(phase/2π)*period .+ t_cyc, spontmean .+ amplitude*sin.(2π*f*t_cyc), 
+            color = :seagreen, linewidth = show_GLR ? 2 : 0.5,  label = RLabel)  #linestyle = :dash, 
 
-    # draw the fitted reference response
-    t_cyc = 0.0:glr_dt:period
-    lines!(L.+(phase/2π)*period.+t_cyc, spontmean .+ A_resp*sin.(2π*f*t_cyc), 
-            color = :white, linewidth = 5)
-    lines!(L.+(phase/2π)*period.+t_cyc, spontmean .+ A_resp*sin.(2π*f*t_cyc), 
-            color = :chartreuse2, linewidth = 3,
-            label = RLabel)
+    # post-process with utility function reposition_legend!()
+    # if the legend overlies plot elements
     axislegend(ax1, position = :rt)
+
+    xlims!(0, T_stim+2.0*T_spont)
+
+    ax2 = Axis(F[1,2], aspect  = DataAspect(),
+                    title = "Spike phase distribution",
+                    xticksvisible = false,
+                    yticksvisible = false,
+                    xgridvisible = false,
+                    ygridvisible = false,
+                    xticklabelsvisible = false,
+                    yticklabelsvisible = false,
+                    leftspinevisible   = false,
+                    rightspinevisible  = false,
+                    topspinevisible    = false,
+                    bottomspinevisible = false
+    )
+    colsize!(F.layout, 1, Relative(3/4))
+
+                    # titlesize = 10,
+    phase_histogram!(ax2, sptime, f, T_spont)
+
+    spikes_cycle = spikecount/((Ncycles-1)*Nrep)
+ #   ax2.xlabel =   @sprintf "%d cycles x %d reps, %.2f spikes/cycle, %.2f cycles/spike" Ncycles Nrep 
+    ax2.xlabelsize = 12  
+
+    txt1 = @sprintf "%d cycles" Ncycles
+    txt2 = @sprintf "%d reps" Nrep
+    txt3 = @sprintf "%.4f s/c" spikes_cycle 
+    txt4 = @sprintf "%.2f c/s" 1.0/spikes_cycle  
+
+    text!(ax2, 0.7, 0.12, text =txt1,  
+            space = :relative,  align = (:left, :top),  fontsize = 14, color = :black)
+    text!(ax2, 0.7, 0.06, text =txt2,  
+            space = :relative,  align = (:left, :top),  fontsize = 14, color = :black)
+    text!(ax2, 0.3, 0.12, text =txt3,  
+            space = :relative,  align = (:right, :top),  fontsize = 14, color = :black)
+    text!(ax2, 0.3, 0.06, text =txt4,  
+            space = :relative,  align = (:right, :top),  fontsize = 14, color = :black)
 
     display(F)
 
-    return sptime, sprate, t, F 
+    return sptime, sprate, t, F
 
 end
 

@@ -125,7 +125,8 @@ function make_qSLIFc_neuron(a::Float64, sigma::Float64, tau_memb::Float64, q::Fl
     V  = Ref(V_reset)
     z  = zeros(Float64, qOrder)      # Oustaloup filter states
 
-    function qSLIF_neuron(u::Function, t::Float64)::Bool
+    # returns true/false if neuron fired/didnt, and membrane potential at current time step
+    function qSLIF_neuron(u::Function, t::Float64)::Tuple{Bool, Float64}
 
         # Raw input: deterministic drive + noise (input-referred)
         x = u(t) + sigma * randn() / sqrt_dt   # [norm-V/s]; noise is input-referred
@@ -138,18 +139,19 @@ function make_qSLIFc_neuron(a::Float64, sigma::Float64, tau_memb::Float64, q::Fl
         dV   = (a + y - V[] / tau_memb) * dt
         V[] += dV
 
-        if V[] >= V_th
+        fired = ( V[] >= V_th )
+        if fired
             V[] = V[] - V_th
-            return true
         end
-        return false
+        
+        return fired, V[]
     end
 
     return qSLIF_neuron, (a,sigma, tau_memb, q)
 end
 
 # Returns closure qSLIF_neuron that simulates 1 timestep (dt) of fractional SLIF neuron
-# qSLIF_neuron returns true if the neuron fired, false otherwise.
+# qSLIF_neuron returns true if the neuron fired, false otherwise, plus the membrane potential V[]
 # Also returns the parameters (a, σ_v, tau, q) of the fractional SLIF model
 # NB recovers SLIF_neuron for q=1
 # Input Param::Tuple is (mu, lambda, tau) where (mu, lambda) are parameters of 
@@ -181,7 +183,8 @@ function make_qSLIF_neuron(mu::Float64, lambda::Float64, tau::Float64, q::Float6
     V  = Ref(V_reset)
     z  = zeros(Float64, qOrder)      # Oustaloup filter states
 
-    function qSLIF_neuron(u::Function, t::Float64)::Bool
+    # returns true/false if neuron fired/didnt fire, and membrane potential V[]
+    function qSLIF_neuron(u::Function, t::Float64)::Tuple{Bool, Float64}
 
         # Raw input: deterministic drive + noise (input-referred)
         x = u(t) + σ_v * randn() / sqrt_dt   # [norm-V/s]; noise is input-referred
@@ -251,7 +254,7 @@ function spiketimes(neuron::Function, u::Function, T::Float64,
     t_prev = 0.0
 
     for t in 0.0:dt:T
-        if neuron(u, t)==true   # neuron fired
+        if neuron(u, t)[1]==true   # neuron fired
             push!(spt, t)
             t_prev = t
         elseif t-t_prev > timeout
@@ -277,7 +280,7 @@ function interspike_intervals(neuron::Function, u::Function, N::Int64,
     while i < N
         t += dt
         Δt = t - t_prev
-        if neuron(u, t)==true   # neuron fired
+        if neuron(u, t)[1]==true   # neuron fired
             i += 1 
             ISI[i] = Δt
             t_prev = t  
