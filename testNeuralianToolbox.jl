@@ -2018,21 +2018,28 @@ function demo_torsionpendulum()
 end
 
 # plot of example qSLIF/dynamic Exwald neuron responding to sinusoidal input current 
-# stimulus frequency f for default 4 cycles.
+# stimulus frequency f for default 4 cycles. Force f to be an integer, makes life easier.
 # i selects neuron from 1 (very regular) to 5 (very irregular)
-# preceded with and followed by T_spont (default 1/f) seconds of spontaneous activity
-function plot_qSLIF_example(i::Int64, f::Float64=1.0, A::Float64 = 8.0, 
-        Ncycles::Int64 = 4, Nrep::Int64 = 128, T_spont::Float64 = -1.0)
+# preceded with and followed by N_spont (default f) periods of spontaneous activity
+function plot_qSLIF_example(i::Int64, f::Int64=1, A::Float64 = 8.0, 
+        Ncycles::Int64 = 4, Nrep::Int64 = 128, N_spont::Int64 = -1; 
+        GLR_ON::Bool=true, SPIKEPLOT_ON::Bool=true)
 
-    # default stimulus duration 
-    T_stim = Ncycles/f 
-
-    # delay before stimulus onset and wait time after stimulus offset 
-    if T_spont < 0.0
-        T_spont = 1.0/f 
-    end
+    # cast f to Float64
+    f = Float64(f)
 
     period = 1.0/f
+
+    # stimulus duration 
+    T_stim = Ncycles*period
+
+    # delay before stimulus onset and wait time after stimulus offset 
+    # default 1 second 
+    if N_spont<0
+        T_spont = 1.0
+    else
+        T_spont = N_spont*period 
+    end
 
     # neuron descriptors
     neuronLabel = ( "Regular afferent (1)" ,
@@ -2043,24 +2050,23 @@ function plot_qSLIF_example(i::Int64, f::Float64=1.0, A::Float64 = 8.0,
                     )
 
     # add edges, to be cut off after filtering (to get rid of filter edge effect)
-    T_edge = 1.0/f  
+    T_edge = period 
 
     # time vector, 
     # allow for spontaneous + edges before and after stim
     T = T_stim +  2.0*(T_edge+T_spont)
+    #println("T=", T)
 
-    # Stimulus is sine wave A*sin(2πft) 
-    # with zero before L and after R
-    L = T_edge+T_spont    
-    R = L + T_stim
-    stimulus(s) = (s>=L) && (s<=R) ? A*sin(2π*f*s) : 0.0
-
-    # GLR sample interval 
-    glr_dt = 0.01/f
+    # GLR sample interval, 100 samples per stimulus cycle
+    glr_dt = 0.01*period
 
     # glr sample times
     # precomputed outside loop because its the same every time
     t = collect(0.0:glr_dt:T)   
+
+    # Stimulus is sine wave A*sin(2πft) 
+    # with zero before L and after R
+    stimulus(s) = (s>=(T_edge+T_spont)) && (s<=T-T_edge-T_spont) ? A*sin(2π*f*s) : 0.0
 
     # sample time indices with edges trimmed, for trimming GLR estimate
     # and trimmed sample times, for plotting edge-trimmed response
@@ -2081,7 +2087,7 @@ function plot_qSLIF_example(i::Int64, f::Float64=1.0, A::Float64 = 8.0,
     # if there are enough spikes per stimulus cycle on every rep for this to not be messy
     spikecount = 0.0  # count spikes after 1st cycle and to end of stimulus in each rep
     show_GLR = true
-    minSpikeCount = 1.0
+    minSpikeCount = 2.0
 
     # start and end time for extracting spikes for Fourier analysis
     L = T_edge+T_spont+period   # start of 2nd stimulus cycle
@@ -2110,7 +2116,7 @@ function plot_qSLIF_example(i::Int64, f::Float64=1.0, A::Float64 = 8.0,
         end
 
         # compute GLR in any case
-        spr, _ = GLRF(spt, f, T, glr_dt )       # rate estimate tuned to f
+        spr = GLRFt(spt, f, t; rectify = false)       # rate estimate tuned to f
 
         # rate estimate, edges trimmed
         sprate[rep] = spr[t_index_trimmed]
@@ -2118,40 +2124,52 @@ function plot_qSLIF_example(i::Int64, f::Float64=1.0, A::Float64 = 8.0,
     end
 
     # plot GLR firing rate, up to 16 reps & mean
-    if show_GLR
-        for rep in 1:min(Nrep,16)
-            lines!(ax1, t_trimmed, sprate[rep], linewidth = 0.5, color = (:salmon1, 1.0))
+    if GLR_ON  # caller specified
+        if show_GLR  # internal switch for when GLR plot gets messy
+            for rep in 1:min(Nrep,16)
+                lines!(ax1, t_trimmed, sprate[rep], linewidth = 0.5, color = (:salmon1, 1.0))
+            end
         end
         lines!(ax1, t_trimmed, mean(sprate), color = :orangered3, linewidth = 2 )
     end
 
     # plot stimulus, offset by spontaneous mean so as to overly response
-    Stlabel = @sprintf "Amplitude = %.2f, Frequency = %.2fHz" A f
+    Stlabel = @sprintf "Amplitude = %.2f, Frequency = %.0fHz" A f
     spontmean = 1.0/summarystats[i][1]  # mean rate = 1/mean interval
     stim = spontmean .+ [stimulus(s+T_edge) for s in t_trimmed]
 
-    lines!(ax1, t_trimmed, stim, color = :white, linewidth = 3)
-    lines!(ax1, t_trimmed, stim, color = :deepskyblue3, linewidth = show_GLR ? 2 : 0.5, label = Stlabel)
+    if SPIKEPLOT_ON
+        lines!(ax1, t_trimmed, stim, color = :white, linewidth = 3)
+        lines!(ax1, t_trimmed, stim, color = :deepskyblue3, linewidth = show_GLR ? 2 : 0.5, label = Stlabel)
+    else
+        lines!(ax1, [0], [0], color = :deepskyblue3, label = Stlabel)
+    end
 
     # spike train (2nd rep)
     Slabel = @sprintf "CV = %.3f, CV* = %.3f"  summarystats[i][3] summarystats[i][4]
-    splot!(ax1, filter(s->(s>T_edge) && (s<T-T_edge), spt) .- T_edge, 8.0, 1.0, label = Slabel)
+    splot_lw = (GLR_ON && show_GLR) ? 1.0 : 2.0
+    splot!(ax1, filter(s->(s>T_edge) && (s<T-T_edge), spt) .- T_edge, 8.0, splot_lw, label = Slabel)
 
     # amplitude and phase of spikes between 2nd cycle & end stimulus
     # at frequency f via Fourier coeffs  
-    amplitude, phase = fit_sine2spiketrain_Fourier(vcat(sptime...), f, period, Ncycles-1, Nrep)
+    amplitude, phase, dc = fit_sine2spiketrain_Fourier(vcat(sptime...), f, period, Ncycles-1, Nrep)
+
+    #drivenmean = spikecount/(period*(Ncycles-1)*Nrep)
 
     # draw the fitted response
     gain = amplitude/A
     phaseDeg = phase*180.0/π
     RLabel = @sprintf "Gain = %.2f, Phase = %.1f degrees" gain phaseDeg
-    t_cyc = 0.0:glr_dt:(period*(Ncycles-2))   
-    # lines!(L.+(phase/2π)*period.+t_cyc, spontmean .+ A_resp*sin.(2π*f*t_cyc), 
-    #         color = :white, linewidth = 5)
-    lines!(L.+(phase/2π)*period .+ t_cyc, spontmean .+ amplitude*sin.(2π*f*t_cyc), 
-            color = :seagreen, linewidth = show_GLR ? 2 : 0.5,  label = RLabel)  #linestyle = :dash, 
+    t_cyc = 0.0:glr_dt:(period*(Ncycles-1))   
+    if SPIKEPLOT_ON
+        FT_linestyle = (GLR_ON && show_GLR) ? :dot : :solid
+        lines!((L+(phase/2π)*period-period) .+ t_cyc, dc .+ amplitude*sin.(2π*f*t_cyc), 
+                color = :gray0, linewidth = show_GLR ? 2.5 : 1,  linestyle = FT_linestyle, label = RLabel) 
+    else
+        lines!([0], [0], color=:gray0, label = RLabel)
+    end
 
-    # post-process with utility function reposition_legend!()
+                # post-process with utility function reposition_legend!()
     # if the legend overlies plot elements
     axislegend(ax1, position = :rt)
 

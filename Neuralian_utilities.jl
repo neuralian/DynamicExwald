@@ -117,6 +117,45 @@ function GLRF(spt::Vector{Float64}, f::Float64, T::Float64=-1, dt::Float64 = 0.0
 end
 
 
+# Gaussian local rate (GLR) estimate, cosine-modulated + rectified
+#   - linear gain = 1.0 exactly at DC (0 Hz)
+#   - linear gain = 1.0 exactly at the oscillation frequency f Hz
+#   - kernel may go negative (interpretable as "invisible negative spikes")
+#   - final rate clipped ≥ 0 (realistic non-negative firing rate)
+#   - same kernel width as original GLR (graceful roll-off, no ringing)
+function GLRFt(spt::Vector{Float64}, f::Float64, t::Vector{Float64}; 
+                rectify::Bool=true)::Vector{Float64}
+
+    # base Gaussian kernel width for -3 dB low pass corner at f Hz 
+    sd = sqrt(log(2)) / (2π * f)
+
+    # frequency response of the base Gaussian at the target frequencies
+    ω0 = 2π * f
+    G_f  = exp(-0.5 * (sd * ω0)^2)          # exactly 1/√2
+    G_2f = exp(-0.5 * (sd * 2ω0)^2)         # exactly 0.25
+
+    # solve for α, β so that the composite filter H(0) = 1 and H(ω0) = 1
+    # (derived from H(ω) = α G(ω) + (β/2)[G(ω-ω0) + G(ω+ω0)])
+    denom = 0.5 * (1 + G_2f) - G_f^2
+    β = (1 - G_f) / denom
+    α = 1 - β * G_f
+
+    # rate at sample times t is convolution of composite kernel with t
+    rate = zeros(length(t))
+    for st in spt
+        g = pdf.(Normal(st, sd), t)
+        rate .+= α .* g .+ β .* g .* cos.(ω0 .* (t .- st))
+    end
+
+    # rectifier: clip negative values 
+    if rectify
+        rate = max.(0.0, rate)
+    end
+
+    return rate
+end
+
+
 # Kullback-Liebler divergence from ISI data to model
 # e.g loss function for optimization to fit Exwald model to ISI data
 #   KLD = (param, grad) -> sKLD(ISI, d->Exwaldpdf(param..., d) )
@@ -2055,11 +2094,11 @@ function phase_histogram!(ax, spt::Vector{Float64}, f::Float64, T_spont::Float64
                                  title::String       = "",
                                  markercolor         = :steelblue)
 
-    stim_spikes = filter(t -> t >= T_spont, spt)
-    n_spikes    = length(stim_spikes)
+   # stim_spikes = spt #filter(t -> t >= T_spont, spt)
+    n_spikes    = length(spt)
     n_spikes == 0 && (@warn "No spikes during stimulus"; return nothing)
 
-    phases_rad = mod.(2π .* f .* (stim_spikes .- T_spont) .- π/2, 2π)
+    phases_rad = mod.(2π .* f .* spt .- π/2, 2π)
 
     sector_width_rad = 2π / n_sectors
     counts           = zeros(n_sectors)
@@ -2123,14 +2162,14 @@ function phase_histogram!(ax, spt::Vector{Float64}, f::Float64, T_spont::Float64
              color=:crimson, markersize=8)
 
     text!(ax, 0.48, 0.9, 
-      text = " lead ←",
+      text = "← lead",
       space = :relative,
       align = (:right, :top),
       fontsize = 14,
       color = :black)
 
     text!(ax, 0.52, 0.9, 
-      text = "→ lag",
+      text = "lag →",
       space = :relative,
       align = (:left, :top),
       fontsize = 14,
@@ -2146,4 +2185,94 @@ end
 # Vector{Vector{Float64}} method
 function phase_histogram!(ax, spt::Vector{Vector{Float64}}, f::Float64, T_spont::Float64)
     phase_histogram!(ax, vcat(spt...), f, T_spont)
+end
+
+using CairoMakie
+using Distributions
+
+"""
+    plot_GLR_filter(f::Float64; fmin=0.01, fmax=100.0)
+
+Plot the GLR cosine-modulated Gaussian kernel and its frequency response.
+- Left panel: kernel h(τ) in the time domain
+- Right panel: gain |H(ω)| on log-log axes over [fmin, fmax] Hz
+
+The kernel is:  h(τ) = α·G(τ) + β·G(τ)·cos(ω₀τ)
+where G(τ) = N(0, σ²) and σ = √(log2) / (2πf).
+
+Gain is computed analytically via the Fourier transform of the kernel:
+  H(ω) = α·exp(-½(σω)²) + (β/2)·[exp(-½(σ(ω-ω₀))²) + exp(-½(σ(ω+ω₀))²)]
+"""
+function plot_GLR_filter(f::Float64; fmin::Float64=0.01, fmax::Float64=100.0)
+
+    # ── kernel parameters (same logic as GLR) ─────────────────────────────
+    ω0   = 2π * f
+    sd   = sqrt(log(2)) / ω0        # σ such that Gaussian is -3 dB at f Hz
+
+    G_f  = exp(-0.5 * (sd * ω0)^2)   # = 1/√2
+    G_2f = exp(-0.5 * (sd * 2ω0)^2)  # ≈ 0.25
+
+    denom = 0.5 * (1 + G_2f) - G_f^2
+    β = (1 - G_f) / denom
+    α = 1 - β * G_f
+
+    # ── time-domain kernel h(τ) ────────────────────────────────────────────
+    # span ±4σ to capture the full kernel
+    τ_max = 4 * sd
+    τ = range(-τ_max, τ_max; length=2000)
+    g = pdf.(Normal(0.0, sd), τ)
+    h = α .* g .+ β .* g .* cos.(ω0 .* τ)
+
+    # ── frequency-domain gain |H(ω)| ──────────────────────────────────────
+    # Analytical FT of h(τ):
+    #   FT[G(τ)·cos(ω₀τ)](ω) = ½[exp(-½σ²(ω-ω₀)²) + exp(-½σ²(ω+ω₀)²)]
+    #   FT[G(τ)](ω)           =  exp(-½(σω)²)
+    freqs = 10 .^ range(log10(fmin), log10(fmax); length=2000)
+    ω     = 2π .* freqs
+    H     = α .* exp.(-0.5 .* (sd .* ω).^2) .+
+            (β/2) .* (exp.(-0.5 .* (sd .* (ω .- ω0)).^2) .+
+                      exp.(-0.5 .* (sd .* (ω .+ ω0)).^2))
+    gain = abs.(H)
+
+    # ── figure ────────────────────────────────────────────────────────────
+    fig = Figure(size=(900, 400), fontsize=13)
+
+    # — left: kernel —
+    ax1 = Axis(fig[1, 1];
+        title  = "Cosine-modulated Gaussian Rate Filter kernel  (f = $(f) Hz)",
+        xlabel = "Time lag τ  (s)",
+        ylabel = "Amplitude",
+    )
+    hlines!(ax1, 0; color=:gray70, linewidth=0.8, linestyle=:dash)
+    lines!(ax1, collect(τ), h; color=:steelblue, linewidth=2)
+    # mark negative-lobe region (the "invisible spikes")
+    neg_mask = h .< 0
+    # band!(ax1, collect(τ), fill(0.0, length(τ)), h;
+    #       color=(:salmon, 0.25))
+
+    # — right: gain —
+    ax2 = Axis(fig[1, 2];
+        title   = "Filter gain  (f = $(f) Hz)",
+        xlabel  = "Frequency  (Log Hz)",
+        ylabel  = "Log Gain",
+        xscale  = log10,
+        yscale  = log10,
+        xticks = (10.0 .^ (floor(Int,log10(fmin)):ceil(Int,log10(fmax))),
+                string.(floor(Int,log10(fmin)):ceil(Int,log10(fmax)))),
+        yticks = (10.0 .^ (-10:1), string.(-10:1)),
+        limits  = (nothing, (10.0^-10, 10.0^1))
+    )
+    hlines!(ax2, 1.0; color=:gray70, linewidth=0.8, linestyle=:dash,
+            label="Gain = 1")
+    lines!(ax2, freqs, gain; color=:steelblue, linewidth=2, label="|H(f)|")
+
+    # mark the design frequencies DC (f→0 edge) and f Hz
+    scatter!(ax2, [fmin, f], [gain[1], 1.0];
+             color=[:gray40, :orangered], markersize=8,
+             label="Design points")
+    vlines!(ax2, [f]; color=:orangered, linewidth=1, linestyle=:dot)
+
+    axislegend(ax2; position=:lb, framevisible=false)
+
+    return fig
 end

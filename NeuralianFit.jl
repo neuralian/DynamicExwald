@@ -392,8 +392,9 @@ end
 
 # Fit a sine wave to spike train (spike times) at specified frequency Hz
 # return amplitude and phase
-function fit_sine2spiketrain_Fourier(spt::Vector{Float64}, f::Float64, T::Float64, 
+function xfit_sine2spiketrain_Fourier(spt::Vector{Float64}, f::Float64, T::Float64, 
             Ncycles::Int64=1, Nrep::Int64=1)
+
     n  = length(spt)
     φ  = 2π .* f .* spt
     A  =  2/T * sum(sin.(φ))    # sine coefficient
@@ -404,4 +405,72 @@ function fit_sine2spiketrain_Fourier(spt::Vector{Float64}, f::Float64, T::Float6
     phase     = atan(-B, A)
 
     return (amplitude=amplitude, phase=phase, r0=r0, A=A, B=B)
+end
+
+
+
+"""
+Fit a sine wave to spike times, correcting for "invisible negative data" 
+caused by the non-negativity constraint (rectification) of firing rates.
+"""
+function fit_sine2spiketrain_Fourier(spt::Vector{Float64}, f::Float64, T::Float64, 
+                                     Ncycles::Int64=1, Nrep::Int64=1)
+    
+    n  = length(spt)
+    φ  = 2π .* f .* spt
+    S_obs  =  2/T * sum(sin.(φ))    # sine coefficient
+    C_obs  =  2/T * sum(cos.(φ))    # cosine coefficient
+    r0_obs = n / (T*Nrep*Ncycles)                  # mean rate
+
+    # amplitude = sqrt(S_obs^2 + C_obs^2)/(Ncycles*Nrep)
+    # phase     = atan2(B, A)
+    
+   # r0_obs = n / T_total            # Observed mean rate (DC)
+    c1_obs = sqrt(S_obs^2 + C_obs^2)/(Ncycles*Nrep) # Observed fundamental amplitude
+    phase  = atan(S_obs, C_obs)-π/2    # Phase of the oscillation
+    
+    # --- Rectification Correction Logic ---
+    
+    # R is the ratio of fundamental amplitude to DC offset
+    # In a pure sine wave with no clipping, R <= 1.0.
+    # If R > 1.0, the signal was clipped at zero.
+    R = c1_obs / r0_obs
+    #println("R=",R)
+    
+    if R <= 1.0
+        # No clipping detected: standard linear Fourier is correct
+        amplitude_true = c1_obs
+        dc_true = r0_obs
+    else
+        # Clipping detected: Solve for conduction angle φ
+        # Target: R(φ) = (φ - sinφ cosφ) / (sinφ - φ cosφ)
+        
+        target_R(x) = (x - sin(x)*cos(x)) / (sin(x) - x*cos(x))
+        
+        # Bisection method to find φ where target_R(φ) == R
+        # Range for φ is (0, π]. π/2 is exactly half-rectified.
+        low, high = 0.001, π
+        φ_sol = π
+        for i in 1:20 # 20 iterations is plenty for Float64 precision
+            mid = (low + high) / 2
+            if target_R(mid) > R
+                low = mid
+            else
+                high = mid
+            end
+            φ_sol = mid
+        end
+        
+        # Recover true parameters using the solved conduction angle
+        amplitude_true = (π * c1_obs) / (φ_sol - sin(φ_sol)*cos(φ_sol))
+        dc_true = -amplitude_true * cos(φ_sol)
+    end
+
+    return (
+        amplitude = amplitude_true, 
+        phase = phase, 
+        r0 = dc_true,      # Corrected DC (d)
+        r0_obs = r0_obs,   # Raw mean rate for comparison
+        c1_obs = c1_obs    # Raw Fourier amplitude for comparison
+    )
 end
